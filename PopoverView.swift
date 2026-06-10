@@ -15,11 +15,22 @@ struct PopoverView: View {
     @State private var showClearAlert = false
     @State private var showSettings = false
     @State private var allowPasteThisTime = true
+    @State private var selectedTag: String? = nil
+    @State private var showTagInput: ClipboardItem? = nil
+    @State private var newTag = ""
+    
+    var allTags: [String] {
+        Array(Set(clipboardManager.items.flatMap { $0.tags })).sorted()
+    }
     
     var filteredItems: [ClipboardItem] {
-        let baseItems = showFavorites 
+        var baseItems = showFavorites 
             ? clipboardManager.items.filter { $0.isFavorite }.sorted { $0.copyCount > $1.copyCount }
             : clipboardManager.items
+        
+        if let tag = selectedTag {
+            baseItems = baseItems.filter { $0.tags.contains(tag) }
+        }
         
         if searchText.isEmpty {
             return baseItems
@@ -88,6 +99,39 @@ struct PopoverView: View {
                 showFavorites.toggle()
             }
             
+            if showFavorites && !allTags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button(action: { selectedTag = nil }) {
+                            Text("全部")
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(selectedTag == nil ? Color.blue : Color.gray.opacity(0.2))
+                                .foregroundColor(selectedTag == nil ? .white : .primary)
+                                .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        ForEach(allTags, id: \.self) { tag in
+                            Button(action: { selectedTag = tag }) {
+                                Text(tag)
+                                    .font(.caption)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(selectedTag == tag ? Color.blue : Color.gray.opacity(0.2))
+                                    .foregroundColor(selectedTag == tag ? .white : .primary)
+                                    .cornerRadius(12)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .background(Color.gray.opacity(0.05))
+            }
+            
             if hasUpdate {
                 HStack {
                     Text("发现新版本 \(latestVersion)")
@@ -127,6 +171,7 @@ struct PopoverView: View {
                                 isEditMode: isEditMode,
                                 shouldPaste: enableAutopaste && allowPasteThisTime,
                                 showCopiedState: $showCopiedIndex,
+                                showTagInput: $showTagInput,
                                 onEdit: {
                                     editingItem = item
                                     editText = item.content
@@ -253,6 +298,60 @@ struct PopoverView: View {
                     .cornerRadius(12)
                     .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
                 }
+                
+                if let item = showTagInput {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            showTagInput = nil
+                            newTag = ""
+                        }
+                    
+                    VStack(spacing: 16) {
+                        HStack {
+                            Text("添加标签")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                            Button(action: { 
+                                showTagInput = nil
+                                newTag = ""
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.gray)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        
+                        TextField("输入标签名称", text: $newTag)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        HStack {
+                            Button("取消") {
+                                showTagInput = nil
+                                newTag = ""
+                            }
+                            .keyboardShortcut(.cancelAction)
+                            
+                            Spacer()
+                            
+                            Button("添加") {
+                                if !newTag.isEmpty {
+                                    clipboardManager.addTag(item, tag: newTag)
+                                    showTagInput = nil
+                                    newTag = ""
+                                }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(newTag.isEmpty)
+                        }
+                    }
+                    .padding(16)
+                    .frame(width: 280)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(12)
+                    .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+                }
             }
         )
     }
@@ -265,13 +364,13 @@ struct PopoverView: View {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let version = json["version"] as? String else { return }
             
-            DispatchQueue.main.async {
+             DispatchQueue.main.async {
                 self.latestVersion = version
                 if self.compareVersions("1.0.0", version) {
                     self.hasUpdate = true
                 }
             }
-        }.resume()
+        }
     }
     
     func compareVersions(_ current: String, _ latest: String) -> Bool {
@@ -295,6 +394,7 @@ struct ItemRow: View {
     let isEditMode: Bool
     let shouldPaste: Bool
     @Binding var showCopiedState: Int?
+    @Binding var showTagInput: ClipboardItem?
     let onEdit: () -> Void
     
     var showCopied: Bool {
@@ -339,6 +439,21 @@ struct ItemRow: View {
                         Text("\(item.copyCount)次")
                             .font(.caption2)
                             .foregroundColor(.orange)
+                    }
+                    
+                    if !item.tags.isEmpty {
+                        Text("•")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                        ForEach(item.tags.prefix(2), id: \.self) { tag in
+                            Text(tag)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.2))
+                                .foregroundColor(.blue)
+                                .cornerRadius(4)
+                        }
                     }
                 }
             }
@@ -424,6 +539,29 @@ struct ItemRow: View {
                 }
             }
         )
+        .contextMenu {
+            if item.isFavorite {
+                Button(action: { showTagInput = item }) {
+                    Label("添加标签", systemImage: "tag")
+                }
+                
+                if !item.tags.isEmpty {
+                    Menu("移除标签") {
+                        ForEach(item.tags, id: \.self) { tag in
+                            Button(tag) {
+                                clipboardManager.removeTag(item, tag: tag)
+                            }
+                        }
+                    }
+                }
+                
+                Divider()
+            }
+            
+            Button(role: .destructive, action: { clipboardManager.deleteItem(item) }) {
+                Label("删除", systemImage: "trash")
+            }
+        }
     }
     
     var previewText: String {

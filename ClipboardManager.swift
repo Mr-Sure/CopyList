@@ -8,6 +8,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     var timestamp: Date
     var isFavorite: Bool
     var copyCount: Int
+    var tags: [String]
     
     enum ItemType: String, Codable {
         case text
@@ -15,13 +16,14 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         case file
     }
     
-    init(id: String = UUID().uuidString, type: ItemType, content: String, timestamp: Date = Date(), isFavorite: Bool = false, copyCount: Int = 0) {
+    init(id: String = UUID().uuidString, type: ItemType, content: String, timestamp: Date = Date(), isFavorite: Bool = false, copyCount: Int = 0, tags: [String] = []) {
         self.id = id
         self.type = type
         self.content = content
         self.timestamp = timestamp
         self.isFavorite = isFavorite
         self.copyCount = copyCount
+        self.tags = tags
     }
 }
 
@@ -145,6 +147,22 @@ class ClipboardManager: ObservableObject {
     func toggleFavorite(_ item: ClipboardItem) {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].isFavorite.toggle()
+            saveHistory()
+        }
+    }
+    
+    func addTag(_ item: ClipboardItem, tag: String) {
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            if !items[index].tags.contains(tag) {
+                items[index].tags.append(tag)
+                saveHistory()
+            }
+        }
+    }
+    
+    func removeTag(_ item: ClipboardItem, tag: String) {
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index].tags.removeAll { $0 == tag }
             saveHistory()
         }
     }
