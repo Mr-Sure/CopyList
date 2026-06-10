@@ -1,10 +1,11 @@
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
     @Environment(\.dismiss) var dismiss
-    @AppStorage("enableAutopaste") private var enableAutoP = false
+    @AppStorage("enableAutopaste") private var enableAutopaste = false
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @State private var showingClearAlert = false
     
@@ -45,7 +46,7 @@ struct SettingsView: View {
                             Divider().padding(.leading, 16)
                             
                             SettingRow {
-                                Toggle("自动粘贴", isOn: $enableAutoP)
+                                Toggle("自动粘贴", isOn: $enableAutopaste)
                             }
                         }
                         .background(Color(NSColor.controlBackgroundColor))
@@ -77,6 +78,20 @@ struct SettingsView: View {
                                         Image(systemName: "trash")
                                     }
                                     .foregroundColor(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            
+                            Divider().padding(.leading, 16)
+                            
+                            SettingRow {
+                                Button(action: exportFavorites) {
+                                    HStack {
+                                        Text("导出收藏夹")
+                                        Spacer()
+                                        Image(systemName: "square.and.arrow.up")
+                                    }
+                                    .foregroundColor(.blue)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -171,6 +186,21 @@ struct SettingsView: View {
                 if let error = error {
                     print("Failed to disable launch at login: \(error)")
                 }
+            }
+        }
+    }
+    
+    private func exportFavorites() {
+        guard let exportURL = clipboardManager.exportFavorites() else { return }
+        
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = exportURL.lastPathComponent
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        
+        panel.begin { response in
+            if response == .OK, let destination = panel.url {
+                try? FileManager.default.copyItem(at: exportURL, to: destination)
             }
         }
     }

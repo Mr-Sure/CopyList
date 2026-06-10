@@ -30,9 +30,11 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
 class ClipboardManager: ObservableObject {
     @Published var items: [ClipboardItem] = []
     private var timer: Timer?
+    private var backupTimer: Timer?
     private var lastChangeCount: Int
     private let storageURL: URL
     private let imagesDirectory: URL
+    private let backupDirectory: URL
     
     init() {
         lastChangeCount = NSPasteboard.general.changeCount
@@ -43,10 +45,13 @@ class ClipboardManager: ObservableObject {
         
         storageURL = appDirectory.appendingPathComponent("history.json")
         imagesDirectory = appDirectory.appendingPathComponent("images")
+        backupDirectory = appDirectory.appendingPathComponent("backups")
         try? FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
         
         loadHistory()
         startMonitoring()
+        startBackupTimer()
     }
     
     func startMonitoring() {
@@ -208,5 +213,57 @@ class ClipboardManager: ObservableObject {
     func getImage(for filename: String) -> NSImage? {
         let fileURL = imagesDirectory.appendingPathComponent(filename)
         return NSImage(contentsOf: fileURL)
+    }
+    
+    private func startBackupTimer() {
+        backupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.backupFavorites()
+        }
+    }
+    
+    private func backupFavorites() {
+        let favorites = items.filter { $0.isFavorite }
+        if favorites.isEmpty { return }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let timestamp = dateFormatter.string(from: Date())
+        let backupURL = backupDirectory.appendingPathComponent("favorites_\(timestamp).json")
+        
+        if let data = try? JSONEncoder().encode(favorites) {
+            try? data.write(to: backupURL)
+        }
+        
+        cleanOldBackups()
+    }
+    
+    private func cleanOldBackups() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: backupDirectory, includingPropertiesForKeys: [.creationDateKey]) else { return }
+        
+        let backupFiles = files.filter { $0.pathExtension == "json" }
+            .sorted { (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate ?? Date.distantPast) ?? Date.distantPast >
+                     (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate ?? Date.distantPast) ?? Date.distantPast }
+        
+        if backupFiles.count > 10 {
+            for file in backupFiles.dropFirst(10) {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+    
+    func exportFavorites() -> URL? {
+        let favorites = items.filter { $0.isFavorite }
+        guard !favorites.isEmpty else { return nil }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let timestamp = dateFormatter.string(from: Date())
+        let exportURL = FileManager.default.temporaryDirectory.appendingPathComponent("CopyList_收藏夹_\(timestamp).json")
+        
+        if let data = try? JSONEncoder().encode(favorites) {
+            try? data.write(to: exportURL)
+            return exportURL
+        }
+        return nil
     }
 }

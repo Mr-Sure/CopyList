@@ -238,122 +238,92 @@ struct PopoverView: View {
         .onAppear {
             checkForUpdates()
         }
-        .overlay(
-            Group {
-                if let item = editingItem {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            editingItem = nil
-                        }
-                    
-                    VStack(spacing: 0) {
-                        HStack {
-                            Text("编辑内容")
-                                .font(.system(size: 15, weight: .semibold))
-                            Spacer()
-                            Button(action: { editingItem = nil }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(16)
-                        .background(Color(NSColor.windowBackgroundColor))
-                        
-                        Divider()
-                        
-                        TextEditor(text: $editText)
-                            .font(.system(size: 13))
-                            .frame(height: 180)
-                            .padding(12)
-                            .scrollContentBackground(.hidden)
-                            .background(Color(NSColor.textBackgroundColor))
-                        
-                        Divider()
-                        
-                        HStack(spacing: 12) {
-                            Button("取消") {
-                                editingItem = nil
-                            }
-                            .keyboardShortcut(.cancelAction)
-                            .controlSize(.large)
-                            
-                            Spacer()
-                            
-                            Button("保存") {
-                                clipboardManager.updateItem(item, newContent: editText)
-                                editingItem = nil
-                                isEditMode = false
-                            }
-                            .keyboardShortcut(.defaultAction)
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
-                        }
-                        .padding(16)
-                        .background(Color(NSColor.windowBackgroundColor))
+        .sheet(item: $editingItem) { item in
+            VStack(spacing: 0) {
+                HStack {
+                    Text("编辑内容")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    Button(action: { editingItem = nil }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
                     }
-                    .frame(width: 280)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    .cornerRadius(12)
-                    .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+                    .buttonStyle(.plain)
+                }
+                .padding(16)
+                
+                Divider()
+                
+                TextEditor(text: $editText)
+                    .font(.system(size: 13))
+                    .frame(height: 180)
+                    .padding(12)
+                
+                Divider()
+                
+                HStack(spacing: 12) {
+                    Button("取消") {
+                        editingItem = nil
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    
+                    Spacer()
+                    
+                    Button("保存") {
+                        clipboardManager.updateItem(item, newContent: editText)
+                        editingItem = nil
+                        isEditMode = false
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(16)
+            }
+            .frame(width: 320, height: 280)
+        }
+        .sheet(item: $showTagInput) { item in
+            VStack(spacing: 16) {
+                HStack {
+                    Text("添加标签")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    Button(action: { 
+                        showTagInput = nil
+                        newTag = ""
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
                 }
                 
-                if let item = showTagInput {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                        .onTapGesture {
+                TextField("输入标签名称", text: $newTag)
+                    .textFieldStyle(.roundedBorder)
+                
+                HStack {
+                    Button("取消") {
+                        showTagInput = nil
+                        newTag = ""
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    
+                    Spacer()
+                    
+                    Button("添加") {
+                        if !newTag.isEmpty {
+                            clipboardManager.addTag(item, tag: newTag)
                             showTagInput = nil
                             newTag = ""
                         }
-                    
-                    VStack(spacing: 16) {
-                        HStack {
-                            Text("添加标签")
-                                .font(.system(size: 15, weight: .semibold))
-                            Spacer()
-                            Button(action: { 
-                                showTagInput = nil
-                                newTag = ""
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        
-                        TextField("输入标签名称", text: $newTag)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        HStack {
-                            Button("取消") {
-                                showTagInput = nil
-                                newTag = ""
-                            }
-                            .keyboardShortcut(.cancelAction)
-                            
-                            Spacer()
-                            
-                            Button("添加") {
-                                if !newTag.isEmpty {
-                                    clipboardManager.addTag(item, tag: newTag)
-                                    showTagInput = nil
-                                    newTag = ""
-                                }
-                            }
-                            .keyboardShortcut(.defaultAction)
-                            .buttonStyle(.borderedProminent)
-                            .disabled(newTag.isEmpty)
-                        }
                     }
-                    .padding(16)
-                    .frame(width: 280)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    .cornerRadius(12)
-                    .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newTag.isEmpty)
                 }
             }
-        )
+            .padding(20)
+            .frame(width: 320, height: 160)
+        }
     }
     
     func checkForUpdates() {
