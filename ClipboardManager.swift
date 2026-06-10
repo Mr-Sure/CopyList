@@ -68,13 +68,7 @@ class ClipboardManager: ObservableObject {
         guard currentCount != lastChangeCount else { return }
         lastChangeCount = currentCount
         
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            let pathString = urls.map { $0.path }.joined(separator: "\n")
-            let newItem = ClipboardItem(type: .file, content: pathString)
-            if !items.contains(where: { $0.content == newItem.content && $0.type == newItem.type }) {
-                addItem(newItem)
-            }
-        } else if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
+        if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
             if let imageData = image.tiffRepresentation,
                let bitmap = NSBitmapImageRep(data: imageData),
                let pngData = bitmap.representation(using: .png, properties: [:]) {
@@ -82,6 +76,12 @@ class ClipboardManager: ObservableObject {
                 let fileURL = imagesDirectory.appendingPathComponent(filename)
                 try? pngData.write(to: fileURL)
                 addItem(ClipboardItem(type: .image, content: filename))
+            }
+        } else if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
+            let pathString = urls.map { $0.path }.joined(separator: "\n")
+            let newItem = ClipboardItem(type: .file, content: pathString)
+            if !items.contains(where: { $0.content == newItem.content && $0.type == newItem.type }) {
+                addItem(newItem)
             }
         } else if let string = pasteboard.string(forType: .string), !string.isEmpty {
             let newItem = ClipboardItem(type: .text, content: string)
