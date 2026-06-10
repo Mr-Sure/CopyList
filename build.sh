@@ -19,7 +19,7 @@ echo "复制 Info.plist..."
 cp Info.plist CopyList.app/Contents/
 
 echo "代码签名..."
-codesign --force --deep --sign - CopyList.app
+codesign --force --deep --sign - --entitlements CopyList.entitlements CopyList.app
 
 echo "验证签名..."
 codesign -vvv CopyList.app
