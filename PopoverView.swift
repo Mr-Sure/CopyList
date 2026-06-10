@@ -480,10 +480,13 @@ struct ItemRow: View {
                             end tell
                             """
                             
-                            let task = Process()
-                            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                            task.arguments = ["-e", script]
-                            try? task.run()
+                            if let appleScript = NSAppleScript(source: script) {
+                                var error: NSDictionary?
+                                appleScript.executeAndReturnError(&error)
+                                if let error = error {
+                                    print("自动粘贴失败: \(error)")
+                                }
+                            }
                         }
                     }
                 } else {
