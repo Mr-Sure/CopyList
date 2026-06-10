@@ -1,0 +1,456 @@
+import SwiftUI
+import AppKit
+
+struct PopoverView: View {
+    @EnvironmentObject var clipboardManager: ClipboardManager
+    @AppStorage("enableAutopaste") private var enableAutopaste = true
+    @State private var searchText = ""
+    @State private var isEditMode = false
+    @State private var editingItem: ClipboardItem?
+    @State private var editText = ""
+    @State private var hasUpdate = false
+    @State private var latestVersion = ""
+    @State private var showCopiedIndex: Int? = nil
+    @State private var showFavorites = false
+    @State private var showClearAlert = false
+    @State private var showSettings = false
+    @State private var allowPasteThisTime = true
+    
+    var filteredItems: [ClipboardItem] {
+        let baseItems = showFavorites 
+            ? clipboardManager.items.filter { $0.isFavorite }.sorted { $0.copyCount > $1.copyCount }
+            : clipboardManager.items
+        
+        if searchText.isEmpty {
+            return baseItems
+        }
+        return baseItems.filter { $0.content.localizedCaseInsensitiveContains(searchText) }
+    }
+    
+    var favoriteCount: Int {
+        clipboardManager.items.filter { $0.isFavorite }.count
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.gray)
+                TextField("搜索历史...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .focusable(false)
+                    .onTapGesture {
+                        allowPasteThisTime = false
+                    }
+                    .onChange(of: searchText) { _ in
+                        allowPasteThisTime = false
+                    }
+                
+                if !searchText.isEmpty {
+                    Button(action: { 
+                        searchText = ""
+                        allowPasteThisTime = true
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                Button(action: { isEditMode.toggle() }) {
+                    Image(systemName: isEditMode ? "pencil.circle.fill" : "pencil.circle")
+                        .foregroundColor(isEditMode ? .blue : .gray)
+                }
+                .buttonStyle(.plain)
+                .help(isEditMode ? "退出编辑模式" : "进入编辑模式")
+            }
+            .padding(12)
+            .background(Color.gray.opacity(0.05))
+            
+            HStack {
+                Image(systemName: showFavorites ? "star.fill" : "star")
+                    .foregroundColor(.orange)
+                Text(showFavorites ? "全部历史" : "收藏夹")
+                    .font(.subheadline)
+                Spacer()
+                Text("\(favoriteCount)")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .background(showFavorites ? Color.orange.opacity(0.1) : Color.clear)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                showFavorites.toggle()
+            }
+            
+            if hasUpdate {
+                HStack {
+                    Text("发现新版本 \(latestVersion)")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    Spacer()
+                    Button("更新") {
+                        if let url = URL(string: "https://github.com/yourusername/copylist/releases") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.blue.opacity(0.1))
+            }
+            
+            Divider()
+            
+            if filteredItems.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(searchText.isEmpty ? "暂无历史记录" : "无搜索结果")
+                        .foregroundColor(.gray)
+                        .font(.subheadline)
+                    Spacer()
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                            ItemRow(
+                                item: item,
+                                index: index + 1,
+                                isEditMode: isEditMode,
+                                shouldPaste: enableAutopaste && allowPasteThisTime,
+                                showCopiedState: $showCopiedIndex,
+                                onEdit: {
+                                    editingItem = item
+                                    editText = item.content
+                                }
+                            )
+                            Divider()
+                        }
+                    }
+                }
+            }
+            
+            Divider()
+            
+            HStack(spacing: 12) {
+                Text("共 \(clipboardManager.items.count) 条")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Button(action: { showClearAlert = true }) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.red)
+                .help("清空")
+                .alert(showFavorites ? "确认清空收藏夹？" : "确认清空剪贴板历史？", isPresented: $showClearAlert) {
+                    Button("取消", role: .cancel) { }
+                    Button("清空", role: .destructive) {
+                        if showFavorites {
+                            clipboardManager.clearFavorites()
+                        } else {
+                            clipboardManager.clearAll()
+                        }
+                    }
+                } message: {
+                    Text(showFavorites ? "将清空所有收藏项，此操作不可恢复" : "将清空所有剪贴板历史（不含收藏），此操作不可恢复")
+                }
+                
+                Button(action: { showSettings = true }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+                .help("设置")
+                .sheet(isPresented: $showSettings) {
+                    SettingsView()
+                        .environmentObject(clipboardManager)
+                }
+                
+                Button(action: { NSApp.terminate(nil) }) {
+                    Image(systemName: "power")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .help("退出")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .frame(width: 320, height: 600)
+        .onAppear {
+            checkForUpdates()
+        }
+        .overlay(
+            Group {
+                if let item = editingItem {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            editingItem = nil
+                        }
+                    
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("编辑内容")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                            Button(action: { editingItem = nil }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.gray)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(16)
+                        .background(Color(NSColor.windowBackgroundColor))
+                        
+                        Divider()
+                        
+                        TextEditor(text: $editText)
+                            .font(.system(size: 13))
+                            .frame(height: 180)
+                            .padding(12)
+                            .scrollContentBackground(.hidden)
+                            .background(Color(NSColor.textBackgroundColor))
+                        
+                        Divider()
+                        
+                        HStack(spacing: 12) {
+                            Button("取消") {
+                                editingItem = nil
+                            }
+                            .keyboardShortcut(.cancelAction)
+                            .controlSize(.large)
+                            
+                            Spacer()
+                            
+                            Button("保存") {
+                                clipboardManager.updateItem(item, newContent: editText)
+                                editingItem = nil
+                                isEditMode = false
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                        }
+                        .padding(16)
+                        .background(Color(NSColor.windowBackgroundColor))
+                    }
+                    .frame(width: 280)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(12)
+                    .shadow(color: Color.black.opacity(0.3), radius: 20, x: 0, y: 10)
+                }
+            }
+        )
+    }
+    
+    func checkForUpdates() {
+        guard let url = URL(string: "https://raw.githubusercontent.com/yourusername/copylist/main/version.json") else { return }
+        
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let version = json["version"] as? String else { return }
+            
+            DispatchQueue.main.async {
+                self.latestVersion = version
+                if self.compareVersions("1.0.0", version) {
+                    self.hasUpdate = true
+                }
+            }
+        }.resume()
+    }
+    
+    func compareVersions(_ current: String, _ latest: String) -> Bool {
+        let currentParts = current.split(separator: ".").compactMap { Int($0) }
+        let latestParts = latest.split(separator: ".").compactMap { Int($0) }
+        
+        for i in 0..<max(currentParts.count, latestParts.count) {
+            let c = i < currentParts.count ? currentParts[i] : 0
+            let l = i < latestParts.count ? latestParts[i] : 0
+            if l > c { return true }
+            if l < c { return false }
+        }
+        return false
+    }
+}
+
+struct ItemRow: View {
+    @EnvironmentObject var clipboardManager: ClipboardManager
+    let item: ClipboardItem
+    let index: Int
+    let isEditMode: Bool
+    let shouldPaste: Bool
+    @Binding var showCopiedState: Int?
+    let onEdit: () -> Void
+    
+    var showCopied: Bool {
+        showCopiedState == index
+    }
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(index)")
+                .font(.caption)
+                .foregroundColor(.gray)
+                .frame(width: 24)
+            
+            if item.type == .image, let image = clipboardManager.getImage(for: item.content) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                Image(systemName: iconName)
+                    .font(.body)
+                    .foregroundColor(iconColor)
+                    .frame(width: 36, height: 36)
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(previewText)
+                    .lineLimit(2)
+                    .font(.system(size: 13))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                HStack(spacing: 6) {
+                    Text(item.timestamp, style: .relative)
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                    
+                    if item.copyCount > 0 {
+                        Text("•")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                        Text("\(item.copyCount)次")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Spacer(minLength: 0)
+            
+            Button(action: {
+                clipboardManager.toggleFavorite(item)
+            }) {
+                Image(systemName: item.isFavorite ? "star.fill" : "star")
+                    .foregroundColor(item.isFavorite ? .orange : .gray)
+                    .font(.body)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                clipboardManager.toggleFavorite(item)
+            }
+            
+            if isEditMode {
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                        .font(.body)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    onEdit()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !isEditMode {
+                clipboardManager.copyToClipboard(item)
+                showCopiedState = index
+                
+                if shouldPaste {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        showCopiedState = nil
+                        NSApp.sendAction(#selector(AppDelegate.closePopover), to: nil, from: nil)
+                        
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            let script = """
+                            tell application "System Events"
+                                keystroke "v" using command down
+                            end tell
+                            """
+                            
+                            let task = Process()
+                            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                            task.arguments = ["-e", script]
+                            try? task.run()
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        showCopiedState = nil
+                    }
+                }
+            }
+        }
+        .overlay(
+            Group {
+                if showCopied {
+                    HStack {
+                        Spacer()
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.body)
+                            .foregroundColor(.white)
+                            .padding(6)
+                            .background(Color.green.opacity(0.9))
+                            .clipShape(Circle())
+                            .padding(.trailing, 8)
+                    }
+                }
+            }
+        )
+    }
+    
+    var previewText: String {
+        switch item.type {
+        case .text:
+            return item.content
+        case .image:
+            return "图片"
+        case .file:
+            let paths = item.content.components(separatedBy: "\n")
+            return paths.count > 1 ? "\(paths.count) 个文件" : paths.first?.components(separatedBy: "/").last ?? "文件"
+        }
+    }
+    
+    var iconName: String {
+        switch item.type {
+        case .text: return "doc.text"
+        case .image: return "photo"
+        case .file: return "folder"
+        }
+    }
+    
+    var iconColor: Color {
+        switch item.type {
+        case .text: return .blue
+        case .image: return .green
+        case .file: return .orange
+        }
+    }
+}

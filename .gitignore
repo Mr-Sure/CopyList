@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build artifacts
+*.dmg
+CopyList.app/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+build/
+DerivedData/
+
+# Swift
+*.swiftmodule
+*.swiftdoc
+*.o
+*.d
+
+# Temporary files
+*~
+.swp
