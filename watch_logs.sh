@@ -1,0 +1,15 @@
+#!/bin/bash
+echo "========================================="
+echo "CopyList 日志监控"
+echo "========================================="
+echo ""
+echo "请在另一个窗口："
+echo "1. 打开备忘录或微信输入框"
+echo "2. 点击输入框"
+echo "3. 打开 CopyList 并点击一条记录"
+echo ""
+echo "监控中... (Ctrl+C 退出)"
+echo "========================================="
+echo ""
+
+log stream --predicate 'processImagePath CONTAINS "CopyList"' --level debug 2>&1 | grep --line-buffered "CopyList:"

@@ -465,31 +465,56 @@ struct ItemRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if !isEditMode {
+                NSLog("=== CopyList: 开始复制流程 ===")
+                NSLog("CopyList: 项目索引 %d", index)
+                NSLog("CopyList: 项目类型 %@", String(describing: item.type))
+                NSLog("CopyList: 是否应该粘贴 %@", shouldPaste ? "是" : "否")
+                
                 clipboardManager.copyToClipboard(item)
                 showCopiedState = index
                 
                 if shouldPaste {
+                    NSLog("CopyList: 准备自动粘贴...")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         showCopiedState = nil
+                        NSLog("CopyList: 关闭 Popover")
                         NSApp.sendAction(#selector(AppDelegate.closePopover), to: nil, from: nil)
                         
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            let script = """
-                            tell application "System Events"
-                                keystroke "v" using command down
-                            end tell
-                            """
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            NSLog("CopyList: 开始执行粘贴操作")
                             
-                            if let appleScript = NSAppleScript(source: script) {
-                                var error: NSDictionary?
-                                appleScript.executeAndReturnError(&error)
-                                if let error = error {
-                                    print("自动粘贴失败: \(error)")
-                                }
+                            // 检查辅助功能权限
+                            let trusted = AXIsProcessTrusted()
+                            NSLog("CopyList: 辅助功能权限状态 %@", trusted ? "✅已授权" : "❌未授权")
+                            
+                            if !trusted {
+                                NSLog("CopyList: ❌ 没有辅助功能权限，无法自动粘贴")
+                                return
                             }
+                            
+                            // 使用 AppleScript
+                            // 注意：如果用户交换了 Command 和 Control 键，这里会自动适应系统设置
+                            let script = NSAppleScript(source: """
+                            tell application "System Events"
+                                delay 0.1
+                                key code 9 using command down
+                            end tell
+                            """)
+                            
+                            var errorDict: NSDictionary?
+                            _ = script?.executeAndReturnError(&errorDict)
+                            
+                            if let error = errorDict {
+                                NSLog("CopyList: ❌ AppleScript 执行失败: %@", error)
+                            } else {
+                                NSLog("CopyList: ✅ AppleScript 执行成功")
+                            }
+                            
+                            NSLog("CopyList: === 粘贴流程完成 ===")
                         }
                     }
                 } else {
+                    NSLog("CopyList: 自动粘贴已关闭，仅复制到剪贴板")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         showCopiedState = nil
                     }
