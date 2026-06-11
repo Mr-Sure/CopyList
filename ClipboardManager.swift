@@ -78,27 +78,53 @@ class ClipboardManager: ObservableObject {
                 addItem(ClipboardItem(type: .image, content: filename))
             }
         } else if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            let pathString = urls.map { $0.path }.joined(separator: "\n")
-            let newItem = ClipboardItem(type: .file, content: pathString)
-            if !items.contains(where: { $0.content == newItem.content && $0.type == newItem.type }) {
+            // 检查是否为图片文件
+            let imageExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "heic", "webp"]
+            if urls.count == 1, imageExtensions.contains(urls[0].pathExtension.lowercased()) {
+                // 单个图片文件：保存为图片类型
+                if let image = NSImage(contentsOf: urls[0]),
+                   let imageData = image.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: imageData),
+                   let pngData = bitmap.representation(using: .png, properties: [:]) {
+                    let filename = "\(UUID().uuidString).png"
+                    let fileURL = imagesDirectory.appendingPathComponent(filename)
+                    try? pngData.write(to: fileURL)
+                    addItem(ClipboardItem(type: .image, content: filename))
+                }
+            } else {
+                // 其他文件：保存为文件类型
+                let pathString = urls.map { $0.path }.joined(separator: "\n")
+                let newItem = ClipboardItem(type: .file, content: pathString)
                 addItem(newItem)
             }
         } else if let string = pasteboard.string(forType: .string), !string.isEmpty {
-            let newItem = ClipboardItem(type: .text, content: string)
-            if !items.contains(where: { $0.content == newItem.content && $0.type == newItem.type }) {
-                addItem(newItem)
+            // 跳过 UUID 格式的图片文件名（防止自己复制的图片被当作文本保存）
+            if string.hasSuffix(".png") && string.count == 40 {
+                // 格式类似：CA218F0E-1649-43BB-9C53-747C29F674E6.png
+                let nameWithoutExt = string.dropLast(4) // 去掉 .png
+                if nameWithoutExt.contains("-") && nameWithoutExt.filter({ $0 == "-" }).count == 4 {
+                    NSLog("CopyList: 跳过图片文件名: %@", string)
+                    return
+                }
             }
+            
+            let newItem = ClipboardItem(type: .text, content: string)
+            addItem(newItem)
         }
     }
     
     func addItem(_ item: ClipboardItem) {
         if let index = items.firstIndex(where: { $0.content == item.content && $0.type == item.type }) {
+            // 内容已存在：更新时间戳并移到顶部
+            NSLog("CopyList: 检测到重复内容，从位置 %d 移到顶部", index + 1)
             var existingItem = items[index]
             existingItem.timestamp = Date()
-            items[index] = existingItem
+            items.remove(at: index)
+            items.insert(existingItem, at: 0)
             saveHistory()
             return
         }
+        NSLog("CopyList: 添加新内容，类型: %@", String(describing: item.type))
         items.insert(item, at: 0)
         if items.count > 1000 {
             items = Array(items.prefix(1000))
@@ -212,7 +238,14 @@ class ClipboardManager: ObservableObject {
     
     func getImage(for filename: String) -> NSImage? {
         let fileURL = imagesDirectory.appendingPathComponent(filename)
-        return NSImage(contentsOf: fileURL)
+        if let image = NSImage(contentsOf: fileURL) {
+            return image
+        } else {
+            NSLog("CopyList: ⚠️ 无法加载图片: %@", filename)
+            NSLog("CopyList: 图片路径: %@", fileURL.path)
+            NSLog("CopyList: 文件存在: %@", FileManager.default.fileExists(atPath: fileURL.path) ? "是" : "否")
+            return nil
+        }
     }
     
     private func startBackupTimer() {
