@@ -34,7 +34,10 @@ class ClipboardManager: ObservableObject {
     private var lastChangeCount: Int
     private let storageURL: URL
     private let imagesDirectory: URL
+    private let thumbnailsDirectory: URL
     private let backupDirectory: URL
+    private var imageCache: [String: NSImage] = [:]
+    private let maxCacheSize = 15
     
     init() {
         lastChangeCount = NSPasteboard.general.changeCount
@@ -45,8 +48,10 @@ class ClipboardManager: ObservableObject {
         
         storageURL = appDirectory.appendingPathComponent("history.json")
         imagesDirectory = appDirectory.appendingPathComponent("images")
+        thumbnailsDirectory = appDirectory.appendingPathComponent("thumbnails")
         backupDirectory = appDirectory.appendingPathComponent("backups")
         try? FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
         
         loadHistory()
@@ -59,6 +64,11 @@ class ClipboardManager: ObservableObject {
             self?.checkClipboard()
         }
         RunLoop.main.add(timer!, forMode: .common)
+        
+        // 每 30 秒清理一次图片缓存，防止内存泄漏
+        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.imageCache.removeAll()
+        }
     }
     
     func checkClipboard() {
@@ -69,12 +79,17 @@ class ClipboardManager: ObservableObject {
         lastChangeCount = currentCount
         
         if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
+            // 保存原图
             if let imageData = image.tiffRepresentation,
                let bitmap = NSBitmapImageRep(data: imageData),
                let pngData = bitmap.representation(using: .png, properties: [:]) {
                 let filename = "\(UUID().uuidString).png"
                 let fileURL = imagesDirectory.appendingPathComponent(filename)
                 try? pngData.write(to: fileURL)
+                
+                // 生成缩略图
+                _ = generateThumbnail(for: image, filename: filename)
+                
                 addItem(ClipboardItem(type: .image, content: filename))
             }
         } else if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
@@ -89,6 +104,10 @@ class ClipboardManager: ObservableObject {
                     let filename = "\(UUID().uuidString).png"
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     try? pngData.write(to: fileURL)
+                    
+                    // 生成缩略图
+                    _ = generateThumbnail(for: image, filename: filename)
+                    
                     addItem(ClipboardItem(type: .image, content: filename))
                 }
             } else {
@@ -237,15 +256,61 @@ class ClipboardManager: ObservableObject {
     }
     
     func getImage(for filename: String) -> NSImage? {
+        // 检查缓存
+        if let cached = imageCache[filename] {
+            return cached
+        }
+        
+        // 优先加载缩略图
+        let thumbURL = thumbnailsDirectory.appendingPathComponent(filename)
+        if let thumbnail = NSImage(contentsOf: thumbURL) {
+            if imageCache.count >= maxCacheSize {
+                imageCache.removeAll()
+            }
+            imageCache[filename] = thumbnail
+            return thumbnail
+        }
+        
+        // 缩略图不存在，从原图生成
         let fileURL = imagesDirectory.appendingPathComponent(filename)
-        if let image = NSImage(contentsOf: fileURL) {
-            return image
-        } else {
-            NSLog("CopyList: ⚠️ 无法加载图片: %@", filename)
-            NSLog("CopyList: 图片路径: %@", fileURL.path)
-            NSLog("CopyList: 文件存在: %@", FileManager.default.fileExists(atPath: fileURL.path) ? "是" : "否")
+        guard let image = NSImage(contentsOf: fileURL) else {
             return nil
         }
+        
+        // 生成并保存缩略图
+        let thumbnail = generateThumbnail(for: image, filename: filename)
+        
+        if imageCache.count >= maxCacheSize {
+            imageCache.removeAll()
+        }
+        imageCache[filename] = thumbnail
+        
+        return thumbnail
+    }
+    
+    private func generateThumbnail(for image: NSImage, filename: String) -> NSImage {
+        let thumbSize: CGFloat = 48
+        let imageSize = image.size
+        let scale = min(thumbSize / imageSize.width, thumbSize / imageSize.height)
+        let newSize = NSSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        
+        let thumbnail = NSImage(size: newSize)
+        thumbnail.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: newSize),
+                   from: NSRect(origin: .zero, size: imageSize),
+                   operation: .copy,
+                   fraction: 1.0)
+        thumbnail.unlockFocus()
+        
+        // 保存缩略图
+        if let tiffData = thumbnail.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            let thumbURL = thumbnailsDirectory.appendingPathComponent(filename)
+            try? pngData.write(to: thumbURL)
+        }
+        
+        return thumbnail
     }
     
     private func startBackupTimer() {

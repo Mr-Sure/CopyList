@@ -163,7 +163,7 @@ struct PopoverView: View {
                 }
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
                             ItemRow(
                                 item: item,
@@ -382,7 +382,7 @@ struct ItemRow: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             } else {
                 Image(systemName: iconName)
