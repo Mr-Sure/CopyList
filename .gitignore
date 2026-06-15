@@ -5,7 +5,9 @@
 
 # Build artifacts
 *.dmg
+*.dmg.bak
 CopyList.app/
+main
 
 # Xcode
 *.xcodeproj
