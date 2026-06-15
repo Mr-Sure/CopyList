@@ -7,7 +7,13 @@ struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @AppStorage("enableAutopaste") private var enableAutopaste = false
     @AppStorage("launchAtLogin") private var launchAtLogin = false
+    /// 历史上限,与 ClipboardManager 共用同一个 key
+    @AppStorage("maxHistoryItems") private var maxHistoryItems: Int = 1000
     @State private var showingClearAlert = false
+    
+    private let limitOptions: [(label: String, value: Int)] = [
+        ("200", 200), ("500", 500), ("1000", 1000), ("2000", 2000), ("5000", 5000)
+    ]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -65,6 +71,26 @@ struct SettingsView: View {
                                     Spacer()
                                     Text("\(clipboardManager.items.count)")
                                         .foregroundColor(.secondary)
+                                }
+                            }
+                            
+                            Divider().padding(.leading, 16)
+                            
+                            SettingRow {
+                                HStack {
+                                    Text("历史上限")
+                                    Spacer()
+                                    Picker("", selection: $maxHistoryItems) {
+                                        ForEach(limitOptions, id: \.value) { option in
+                                            Text(option.label).tag(option.value)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                    .onChange(of: maxHistoryItems) { _ in
+                                        // 调低上限时立即裁剪
+                                        clipboardManager.trimToMaxItems()
+                                    }
                                 }
                             }
                             

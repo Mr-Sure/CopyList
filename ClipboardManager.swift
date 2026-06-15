@@ -1,5 +1,14 @@
 import SwiftUI
 import AppKit
+import ImageIO
+import os.log
+
+/// 统一日志:type: .debug 在 Release 默认不落盘,近乎零开销
+private let clLogger = OSLog(subsystem: "com.copylist.app", category: "clipboard")
+@inline(__always)
+private func clLog(_ message: StaticString, _ args: CVarArg...) {
+    os_log(message, log: clLogger, type: .debug, args)
+}
 
 struct ClipboardItem: Identifiable, Codable, Hashable {
     let id: String
@@ -29,6 +38,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
 
 class ClipboardManager: ObservableObject {
     @Published var items: [ClipboardItem] = []
+    /// 历史上限,可由 Settings 配置(默认 1000)
+    @AppStorage("maxHistoryItems") var maxHistoryItems: Int = 1000
     private var timer: Timer?
     private var backupTimer: Timer?
     private var lastChangeCount: Int
@@ -36,8 +47,16 @@ class ClipboardManager: ObservableObject {
     private let imagesDirectory: URL
     private let thumbnailsDirectory: URL
     private let backupDirectory: URL
-    private var imageCache: [String: NSImage] = [:]
-    private let maxCacheSize = 15
+    /// 防抖保存:连续操作合并为一次写盘
+    private var saveWorkItem: DispatchWorkItem?
+    /// 内存压力监听源(macOS 上等价于 didReceiveMemoryWarningNotification)
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private let imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 50
+        cache.totalCostLimit = 50 * 1024 * 1024 // 50MB,按字节 LRU 淘汰
+        return cache
+    }()
     
     init() {
         lastChangeCount = NSPasteboard.general.changeCount
@@ -57,17 +76,49 @@ class ClipboardManager: ObservableObject {
         loadHistory()
         startMonitoring()
         startBackupTimer()
+        registerMemoryWarning()
+    }
+    
+    deinit {
+        memoryPressureSource?.cancel()
+        timer?.invalidate()
+        backupTimer?.invalidate()
+        saveWorkItem?.cancel()
+    }
+    
+    /// 系统内存压力(.warning/.critical)时清空图片缓存
+    /// (NSCache 自身也会响应压力,这里做显式兜底)
+    private func registerMemoryWarning() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            self?.imageCache.removeAllObjects()
+            clLog("CopyList: 收到内存压力事件,已清空图片缓存")
+        }
+        source.resume()
+        memoryPressureSource = source
     }
     
     func startMonitoring() {
+        // 已在运行则不重复启动
+        guard timer == nil else { return }
         timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             self?.checkClipboard()
         }
         RunLoop.main.add(timer!, forMode: .common)
-        
-        // 每 30 秒清理一次图片缓存，防止内存泄漏
-        Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.imageCache.removeAll()
+    }
+    
+    /// popover 关闭时调用,停止后台轮询以降低 idle CPU
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
+    }
+    
+    /// 应用退出前调用,确保 pending 的防抖写盘落盘
+    func flushPendingSave() {
+        if saveWorkItem != nil {
+            saveWorkItem?.cancel()
+            saveWorkItem = nil
+            performSave()
         }
     }
     
@@ -79,35 +130,38 @@ class ClipboardManager: ObservableObject {
         lastChangeCount = currentCount
         
         if let image = pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
-            // 保存原图
-            if let imageData = image.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: imageData),
-               let pngData = bitmap.representation(using: .png, properties: [:]) {
+            // 用 autoreleasepool 限制临时 NSImage / 位图的作用域，写盘后立即释放
+            autoreleasepool {
+                // 保存原图
+                guard let imageData = image.tiffRepresentation,
+                      let bitmap = NSBitmapImageRep(data: imageData),
+                      let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
                 let filename = "\(UUID().uuidString).png"
                 let fileURL = imagesDirectory.appendingPathComponent(filename)
                 try? pngData.write(to: fileURL)
-                
-                // 生成缩略图
-                _ = generateThumbnail(for: image, filename: filename)
-                
+
+                // 缩略图改为从已落盘的原图流式生成，不再持有内存中的全尺寸 NSImage
+                _ = generateThumbnailFromFile(at: fileURL, filename: filename)
+
                 addItem(ClipboardItem(type: .image, content: filename))
             }
         } else if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
             // 检查是否为图片文件
             let imageExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "heic", "webp"]
             if urls.count == 1, imageExtensions.contains(urls[0].pathExtension.lowercased()) {
-                // 单个图片文件：保存为图片类型
-                if let image = NSImage(contentsOf: urls[0]),
-                   let imageData = image.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: imageData),
-                   let pngData = bitmap.representation(using: .png, properties: [:]) {
+                // 单个图片文件：保存为图片类型（需转码为统一 PNG，必须解码原图）
+                autoreleasepool {
+                    guard let image = NSImage(contentsOf: urls[0]),
+                          let imageData = image.tiffRepresentation,
+                          let bitmap = NSBitmapImageRep(data: imageData),
+                          let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
                     let filename = "\(UUID().uuidString).png"
                     let fileURL = imagesDirectory.appendingPathComponent(filename)
                     try? pngData.write(to: fileURL)
-                    
-                    // 生成缩略图
-                    _ = generateThumbnail(for: image, filename: filename)
-                    
+
+                    // 缩略图从已落盘的原图流式生成
+                    _ = generateThumbnailFromFile(at: fileURL, filename: filename)
+
                     addItem(ClipboardItem(type: .image, content: filename))
                 }
             } else {
@@ -122,7 +176,7 @@ class ClipboardManager: ObservableObject {
                 // 格式类似：CA218F0E-1649-43BB-9C53-747C29F674E6.png
                 let nameWithoutExt = string.dropLast(4) // 去掉 .png
                 if nameWithoutExt.contains("-") && nameWithoutExt.filter({ $0 == "-" }).count == 4 {
-                    NSLog("CopyList: 跳过图片文件名: %@", string)
+                    clLog("CopyList: 跳过图片文件名: %s", string)
                     return
                 }
             }
@@ -135,20 +189,21 @@ class ClipboardManager: ObservableObject {
     func addItem(_ item: ClipboardItem) {
         if let index = items.firstIndex(where: { $0.content == item.content && $0.type == item.type }) {
             // 内容已存在：更新时间戳并移到顶部
-            NSLog("CopyList: 检测到重复内容，从位置 %d 移到顶部", index + 1)
+            clLog("CopyList: 检测到重复内容，从位置 %d 移到顶部", index + 1)
             var existingItem = items[index]
             existingItem.timestamp = Date()
             items.remove(at: index)
             items.insert(existingItem, at: 0)
-            saveHistory()
+            scheduleSaveHistory()
             return
         }
-        NSLog("CopyList: 添加新内容，类型: %@", String(describing: item.type))
+        clLog("CopyList: 添加新内容，类型: %s", String(describing: item.type))
         items.insert(item, at: 0)
-        if items.count > 1000 {
-            items = Array(items.prefix(1000))
+        // 超过上限时原地裁剪,避免 Array(prefix) 整体拷贝
+        if items.count > maxHistoryItems {
+            items.removeSubrange(maxHistoryItems...)
         }
-        saveHistory()
+        scheduleSaveHistory()
     }
     
     func copyToClipboard(_ item: ClipboardItem) {
@@ -160,8 +215,11 @@ class ClipboardManager: ObservableObject {
             pasteboard.setString(item.content, forType: .string)
         case .image:
             let fileURL = imagesDirectory.appendingPathComponent(item.content)
-            if let image = NSImage(contentsOf: fileURL) {
-                pasteboard.writeObjects([image])
+            // autoreleasepool 包裹全尺寸解码峰值,粘贴后立即释放位图
+            autoreleasepool {
+                if let image = NSImage(contentsOf: fileURL) {
+                    pasteboard.writeObjects([image])
+                }
             }
         case .file:
             let paths = item.content.components(separatedBy: "\n")
@@ -179,7 +237,7 @@ class ClipboardManager: ObservableObject {
             
             items.remove(at: index)
             items.insert(updatedItem, at: 0)
-            saveHistory()
+            scheduleSaveHistory()
         }
         
         lastChangeCount = pasteboard.changeCount
@@ -191,13 +249,13 @@ class ClipboardManager: ObservableObject {
             try? FileManager.default.removeItem(at: fileURL)
         }
         items.removeAll { $0.id == item.id }
-        saveHistory()
+        scheduleSaveHistory()
     }
     
     func toggleFavorite(_ item: ClipboardItem) {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].isFavorite.toggle()
-            saveHistory()
+            scheduleSaveHistory()
         }
     }
     
@@ -205,7 +263,7 @@ class ClipboardManager: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             if !items[index].tags.contains(tag) {
                 items[index].tags.append(tag)
-                saveHistory()
+                scheduleSaveHistory()
             }
         }
     }
@@ -213,14 +271,14 @@ class ClipboardManager: ObservableObject {
     func removeTag(_ item: ClipboardItem, tag: String) {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].tags.removeAll { $0 == tag }
-            saveHistory()
+            scheduleSaveHistory()
         }
     }
     
     func updateItem(_ item: ClipboardItem, newContent: String) {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].content = newContent
-            saveHistory()
+            scheduleSaveHistory()
         }
     }
     
@@ -230,7 +288,8 @@ class ClipboardManager: ObservableObject {
             try? FileManager.default.removeItem(at: fileURL)
         }
         items.removeAll { !$0.isFavorite }
-        saveHistory()
+        // 清空是不可逆关键操作,立即落盘
+        flushPendingSave()
     }
     
     func clearFavorites() {
@@ -239,10 +298,29 @@ class ClipboardManager: ObservableObject {
             try? FileManager.default.removeItem(at: fileURL)
         }
         items.removeAll { $0.isFavorite }
-        saveHistory()
+        flushPendingSave()
     }
     
-    private func saveHistory() {
+    /// 上限被调低时调用,立即裁剪到新上限
+    func trimToMaxItems() {
+        guard items.count > maxHistoryItems else { return }
+        items.removeSubrange(maxHistoryItems...)
+        scheduleSaveHistory()
+    }
+    
+    /// 防抖保存:连续操作在 0.5s 窗口内合并为一次写盘
+    private func scheduleSaveHistory() {
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.performSave()
+        }
+        saveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    
+    /// 实际写盘逻辑(原 saveHistory)
+    private func performSave() {
+        saveWorkItem = nil
         if let data = try? JSONEncoder().encode(items) {
             try? data.write(to: storageURL)
         }
@@ -256,60 +334,71 @@ class ClipboardManager: ObservableObject {
     }
     
     func getImage(for filename: String) -> NSImage? {
-        // 检查缓存
-        if let cached = imageCache[filename] {
+        // 检查 NSCache（自动 LRU 淘汰，响应内存警告）
+        if let cached = imageCache.object(forKey: filename as NSString) {
             return cached
         }
-        
-        // 优先加载缩略图
+
+        // 优先加载已落盘的缩略图（小文件，占用低）
         let thumbURL = thumbnailsDirectory.appendingPathComponent(filename)
         if let thumbnail = NSImage(contentsOf: thumbURL) {
-            if imageCache.count >= maxCacheSize {
-                imageCache.removeAll()
-            }
-            imageCache[filename] = thumbnail
+            cacheImage(thumbnail, for: filename)
             return thumbnail
         }
-        
-        // 缩略图不存在，从原图生成
+
+        // 缩略图不存在：用 ImageIO 从原图流式生成（绝不全尺寸解码原图）
         let fileURL = imagesDirectory.appendingPathComponent(filename)
-        guard let image = NSImage(contentsOf: fileURL) else {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
         }
-        
-        // 生成并保存缩略图
-        let thumbnail = generateThumbnail(for: image, filename: filename)
-        
-        if imageCache.count >= maxCacheSize {
-            imageCache.removeAll()
+        guard let thumbnail = generateThumbnailFromFile(at: fileURL, filename: filename) else {
+            return nil
         }
-        imageCache[filename] = thumbnail
-        
+        cacheImage(thumbnail, for: filename)
         return thumbnail
     }
     
-    private func generateThumbnail(for image: NSImage, filename: String) -> NSImage {
-        let thumbSize: CGFloat = 48
-        let imageSize = image.size
-        let scale = min(thumbSize / imageSize.width, thumbSize / imageSize.height)
-        let newSize = NSSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        
-        let thumbnail = NSImage(size: newSize)
-        thumbnail.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: newSize),
-                   from: NSRect(origin: .zero, size: imageSize),
-                   operation: .copy,
-                   fraction: 1.0)
-        thumbnail.unlockFocus()
-        
-        // 保存缩略图
+    /// 仅查缓存,不触发任何磁盘 I/O。供 UI 决定走同步还是异步路径。
+    func getCachedImage(for filename: String) -> NSImage? {
+        return imageCache.object(forKey: filename as NSString)
+    }
+    
+    /// 缓存图片并按估算字节设置 cost(供 NSCache 按字节 LRU 淘汰)
+    private func cacheImage(_ image: NSImage, for filename: String) {
+        let rep = image.representations.first
+        let pixels = (rep?.pixelsWide ?? 96) * (rep?.pixelsHigh ?? 96)
+        let cost = pixels * 4 // RGBA 每像素 4 字节
+        imageCache.setObject(image, forKey: filename as NSString, cost: cost)
+    }
+
+    /// 通过 ImageIO 的 CGImageSourceCreateThumbnailAtIndex 从文件流式生成缩略图，
+    /// 不把原图全尺寸解码到内存，避免大图解码峰值（单张 1MB PNG 解码后可达数十 MB 位图）。
+    /// 顺带用 96px（48pt @2x）解决原 48px 在 Retina 屏模糊的问题。
+    private func generateThumbnailFromFile(at fileURL: URL, filename: String) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
+            return nil
+        }
+
+        let maxPixel: CGFloat = 96 // 48pt @2x
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+
+        let thumbnail = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+
+        // 保存缩略图到磁盘，下次直接读取小文件
         if let tiffData = thumbnail.tiffRepresentation,
            let bitmap = NSBitmapImageRep(data: tiffData),
            let pngData = bitmap.representation(using: .png, properties: [:]) {
             let thumbURL = thumbnailsDirectory.appendingPathComponent(filename)
             try? pngData.write(to: thumbURL)
         }
-        
+
         return thumbnail
     }
     

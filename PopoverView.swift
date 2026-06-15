@@ -1,5 +1,12 @@
 import SwiftUI
 import AppKit
+import os.log
+
+private let popoverLogger = OSLog(subsystem: "com.copylist.app", category: "popover")
+@inline(__always)
+private func pLog(_ message: StaticString, _ args: CVarArg...) {
+    os_log(message, log: popoverLogger, type: .debug, args)
+}
 
 struct PopoverView: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
@@ -366,6 +373,8 @@ struct ItemRow: View {
     @Binding var showCopiedState: Int?
     @Binding var showTagInput: ClipboardItem?
     let onEdit: () -> Void
+    /// 异步加载的缩略图;缓存命中时直接同步赋值
+    @State private var loadedImage: NSImage?
     
     var showCopied: Bool {
         showCopiedState == index
@@ -378,12 +387,22 @@ struct ItemRow: View {
                 .foregroundColor(.gray)
                 .frame(width: 24)
             
-            if item.type == .image, let image = clipboardManager.getImage(for: item.content) {
+            if item.type == .image, let image = loadedImage {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else if item.type == .image {
+                // 异步加载中的占位符
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.gray.opacity(0.15))
+                    .frame(width: 48, height: 48)
+                    .overlay(
+                        Image(systemName: "photo")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    )
             } else {
                 Image(systemName: iconName)
                     .font(.body)
@@ -462,34 +481,37 @@ struct ItemRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.clear)
+        .onAppear {
+            loadThumbnailIfNeeded()
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             if !isEditMode {
-                NSLog("=== CopyList: 开始复制流程 ===")
-                NSLog("CopyList: 项目索引 %d", index)
-                NSLog("CopyList: 项目类型 %@", String(describing: item.type))
-                NSLog("CopyList: 是否应该粘贴 %@", shouldPaste ? "是" : "否")
+                pLog("=== CopyList: 开始复制流程 ===")
+                pLog("CopyList: 项目索引 %d", index)
+                pLog("CopyList: 项目类型 %s", String(describing: item.type))
+                pLog("CopyList: 是否应该粘贴 %s", shouldPaste ? "是" : "否")
                 
                 clipboardManager.copyToClipboard(item)
                 
                 if shouldPaste {
-                    NSLog("CopyList: 准备自动粘贴...")
-                    NSLog("CopyList: 关闭 Popover")
+                    pLog("CopyList: 准备自动粘贴...")
+                    pLog("CopyList: 关闭 Popover")
                     NSApp.sendAction(#selector(AppDelegate.closePopover), to: nil, from: nil)
                     
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        NSLog("CopyList: 开始执行粘贴操作")
+                        pLog("CopyList: 开始执行粘贴操作")
                         
                         // 检查辅助功能权限
                         let trusted = AXIsProcessTrusted()
-                        NSLog("CopyList: 辅助功能权限状态 %@", trusted ? "✅已授权" : "❌未授权")
+                        pLog("CopyList: 辅助功能权限状态 %s", trusted ? "✅已授权" : "❌未授权")
                         
                         if !trusted {
-                            NSLog("CopyList: ❌ 没有辅助功能权限，无法自动粘贴")
+                            pLog("CopyList: ❌ 没有辅助功能权限，无法自动粘贴")
                             return
                         }
                         
-                        // 使用 AppleScript
+                        // 使用 AppleScript(每次新建实例,避免预编译脚本状态污染)
                         let script = NSAppleScript(source: """
                         tell application "System Events"
                             key code 9 using command down
@@ -500,9 +522,9 @@ struct ItemRow: View {
                         _ = script?.executeAndReturnError(&errorDict)
                         
                         if let error = errorDict {
-                            NSLog("CopyList: ❌ AppleScript 执行失败: %@", error)
+                            pLog("CopyList: ❌ AppleScript 执行失败: %@", error)
                         } else {
-                            NSLog("CopyList: ✅ AppleScript 执行成功")
+                            pLog("CopyList: ✅ AppleScript 执行成功")
                         }
                     }
                 } else {
@@ -557,12 +579,34 @@ struct ItemRow: View {
     var previewText: String {
         switch item.type {
         case .text:
-            return item.content
+            // 长文本截断,避免 Text 完整测量整段内容(超长文本会拖慢布局)
+            return item.content.count > 200
+                ? String(item.content.prefix(200)) + "…"
+                : item.content
         case .image:
             return "图片"
         case .file:
             let paths = item.content.components(separatedBy: "\n")
             return paths.count > 1 ? "\(paths.count) 个文件" : paths.first?.components(separatedBy: "/").last ?? "文件"
+        }
+    }
+    
+    /// 缩略图加载:缓存命中同步返回,否则异步解码后回主线程赋值,
+    /// 避免滚动时主线程被磁盘 I/O / ImageIO 解码阻塞
+    private func loadThumbnailIfNeeded() {
+        guard item.type == .image, loadedImage == nil else { return }
+        let filename = item.content
+        // 先同步查缓存(命中时直接展示,不进异步路径)
+        if let cached = clipboardManager.getCachedImage(for: filename) {
+            loadedImage = cached
+            return
+        }
+        // 缓存未命中,后台解码
+        DispatchQueue.global(qos: .userInitiated).async {
+            let image = self.clipboardManager.getImage(for: filename)
+            DispatchQueue.main.async {
+                self.loadedImage = image
+            }
         }
     }
     

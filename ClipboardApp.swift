@@ -46,6 +46,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    /// 退出前确保 pending 的防抖写盘落盘
+    func applicationWillTerminate(_ notification: Notification) {
+        clipboardManager.flushPendingSave()
+    }
+    
     @objc func togglePopover() {
         if let button = statusItem.button {
             if popover.isShown {
