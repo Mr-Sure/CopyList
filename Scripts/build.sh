@@ -196,7 +196,7 @@ else
         # 仅在代码有变更时创建新 Release
         if [ "$HAS_CHANGES" = true ]; then
             # 生成 Release 说明文件
-            RELEASE_NOTES_FILE=$(mktemp)
+            RELEASE_NOTES_FILE="/tmp/copylist_release_notes.md"
             cat > "$RELEASE_NOTES_FILE" << EOF
 ## 🎉 CopyList $TAG
 
