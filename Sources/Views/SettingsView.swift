@@ -187,6 +187,8 @@ struct SettingsView: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+
+                            AboutAuthorRows()
                         }
                         .background(Color(NSColor.controlBackgroundColor))
                         .cornerRadius(8)
@@ -304,15 +306,68 @@ struct SettingsView: View {
 
 struct SettingRow<Content: View>: View {
     let content: () -> Content
-    
+
     init(@ViewBuilder content: @escaping () -> Content) {
         self.content = content
     }
-    
+
     var body: some View {
         content()
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// 关于区块中的作者信息行（作者、邮箱、GitHub）
+/// 拆分为独立视图以规避 SwiftUI ViewBuilder 10 个子视图的上限
+struct AboutAuthorRows: View {
+    var body: some View {
+        Divider().padding(.leading, 16)
+
+        SettingRow {
+            HStack {
+                Text("作者")
+                Spacer()
+                Text("Sure")
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        Divider().padding(.leading, 16)
+
+        SettingRow {
+            Button(action: {
+                if let url = URL(string: "mailto:sure@tuiyilin.com") {
+                    NSWorkspace.shared.open(url)
+                }
+            }) {
+                HStack {
+                    Text("邮箱")
+                    Spacer()
+                    Text("sure@tuiyilin.com")
+                }
+                .foregroundColor(.blue)
+            }
+            .buttonStyle(.plain)
+        }
+
+        Divider().padding(.leading, 16)
+
+        SettingRow {
+            Button(action: {
+                if let url = URL(string: "https://github.com/Mr-Sure") {
+                    NSWorkspace.shared.open(url)
+                }
+            }) {
+                HStack {
+                    Text("GitHub")
+                    Spacer()
+                    Text("Mr-Sure")
+                }
+                .foregroundColor(.blue)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
