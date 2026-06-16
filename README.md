@@ -198,6 +198,11 @@ CopyList/
   <img src="https://raw.githubusercontent.com/Mr-Sure/CopyList/master/Docs/wechat_qrcode.jpg" alt="公众号二维码" width="200">
 </p>
 
+## 🔗 友链
+
+- [LINUX DO](https://linux.do) — 新的理想型社区
+- [心心念念日](https://days.bettersun.cn) — 纪念日管理
+
 ## 📄 许可证
 
 本项目采用 [MIT License](LICENSE) 开源。
