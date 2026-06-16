@@ -195,19 +195,52 @@ else
     else
         # 仅在代码有变更时创建新 Release
         if [ "$HAS_CHANGES" = true ]; then
-            # 生成 Release 说明
-            RELEASE_NOTES="## CopyList $TAG\n\n"
-            RELEASE_NOTES+="**构建时间:** $BUILD_TIME  \n"
-            RELEASE_NOTES+="**构建号:** $BUILD_NUMBER  \n\n"
-            RELEASE_NOTES+="### 下载\n"
-            RELEASE_NOTES+="- [CopyList.dmg]($GITHUB_RELEASES/download/$TAG/CopyList.dmg) - macOS 安装包"
+            # 生成 Release 说明文件
+            RELEASE_NOTES_FILE=$(mktemp)
+            cat > "$RELEASE_NOTES_FILE" << EOF
+## 🎉 CopyList $TAG
+
+---
+
+### 📦 下载
+
+| 文件 | 平台 | 说明 |
+|------|------|------|
+| [CopyList.dmg]($GITHUB_RELEASES/download/$TAG/CopyList.dmg) | macOS 13.0+ | 安装包，双击拖入 Applications 即可 |
+
+### 📋 构建信息
+
+| 项目 | 值 |
+|------|-----|
+| 版本号 | $TAG |
+| 构建号 | $BUILD_NUMBER |
+| 构建时间 | $BUILD_TIME |
+
+### 🚀 快速开始
+
+1. 下载 \`CopyList.dmg\` 并打开
+2. 将 \`CopyList.app\` 拖入 \`Applications\` 文件夹
+3. 启动 CopyList，状态栏出现图标即可使用
+
+### 📖 相关链接
+
+- [📖 使用文档]($GITHUB_RELEASES/tag/$TAG)
+- [🐛 问题反馈](https://github.com/Mr-Sure/CopyList/issues)
+- [💬 公众号](https://raw.githubusercontent.com/Mr-Sure/CopyList/master/Docs/wechat_qrcode.jpg)
+
+---
+
+**如果觉得好用，请给个 ⭐ Star 支持一下！**
+EOF
 
             echo "   创建 Release $TAG..."
             gh release create "$TAG" \
                 --repo Mr-Sure/CopyList \
                 --title "CopyList $TAG" \
-                --notes "$RELEASE_NOTES" \
+                --notes-file "$RELEASE_NOTES_FILE" \
                 CopyList.dmg 2>&1
+
+            rm -f "$RELEASE_NOTES_FILE"
 
             if [ $? -eq 0 ]; then
                 echo "   ✅ Release 已创建并上传 DMG"
