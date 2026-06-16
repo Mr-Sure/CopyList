@@ -146,7 +146,7 @@ struct PopoverView: View {
                         .foregroundColor(.blue)
                     Spacer()
                     Button("更新") {
-                        if let url = URL(string: "https://github.com/yourusername/copylist/releases") {
+                        if let url = URL(string: "https://github.com/Mr-Sure/CopyList/releases") {
                             NSWorkspace.shared.open(url)
                         }
                     }
@@ -334,7 +334,7 @@ struct PopoverView: View {
     }
     
     func checkForUpdates() {
-        guard let url = URL(string: "https://raw.githubusercontent.com/yourusername/copylist/main/version.json") else { return }
+        guard let url = URL(string: "https://raw.githubusercontent.com/Mr-Sure/CopyList/main/version.json") else { return }
         
         URLSession.shared.dataTask(with: url) { data, _, _ in
             guard let data = data,
@@ -343,11 +343,11 @@ struct PopoverView: View {
             
              DispatchQueue.main.async {
                 self.latestVersion = version
-                if self.compareVersions("1.0.0", version) {
+                if self.compareVersions(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0", version) {
                     self.hasUpdate = true
                 }
             }
-        }
+        }.resume()
     }
     
     func compareVersions(_ current: String, _ latest: String) -> Bool {

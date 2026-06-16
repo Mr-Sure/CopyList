@@ -8,6 +8,7 @@
 *.dmg.bak
 CopyList.app/
 main
+/tmp/
 
 # Xcode
 *.xcodeproj
@@ -20,6 +21,11 @@ DerivedData/
 *.swiftdoc
 *.o
 *.d
+
+# IDE
+.vscode/
+.idea/
+*.xcuserstate
 
 # Temporary files
 *~

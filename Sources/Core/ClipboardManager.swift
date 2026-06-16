@@ -42,6 +42,8 @@ class ClipboardManager: ObservableObject {
     @AppStorage("maxHistoryItems") var maxHistoryItems: Int = 1000
     private var timer: Timer?
     private var backupTimer: Timer?
+    /// 定期清理未使用的图片缓存（每 5 分钟）
+    private var cacheCleanupTimer: Timer?
     private var lastChangeCount: Int
     private let storageURL: URL
     private let imagesDirectory: URL
@@ -77,12 +79,14 @@ class ClipboardManager: ObservableObject {
         startMonitoring()
         startBackupTimer()
         registerMemoryWarning()
+        startCacheCleanupTimer()
     }
     
     deinit {
         memoryPressureSource?.cancel()
         timer?.invalidate()
         backupTimer?.invalidate()
+        cacheCleanupTimer?.invalidate()
         saveWorkItem?.cancel()
     }
     
@@ -400,6 +404,14 @@ class ClipboardManager: ObservableObject {
         }
 
         return thumbnail
+    }
+    
+    /// 定期清空图片缓存，防止长期运行时缓存无限增长
+    private func startCacheCleanupTimer() {
+        cacheCleanupTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            self?.imageCache.removeAllObjects()
+            clLog("CopyList: 定期清理图片缓存")
+        }
     }
     
     private func startBackupTimer() {

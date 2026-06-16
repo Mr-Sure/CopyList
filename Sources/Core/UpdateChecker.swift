@@ -1,12 +1,17 @@
 import SwiftUI
+import AppKit
 
-struct UpdateChecker: ObservableObject {
+class UpdateChecker: ObservableObject {
     @Published var hasUpdate = false
     @Published var latestVersion = ""
     @Published var downloadURL = ""
     
-    let currentVersion = "1.0.0"
-    let updateCheckURL = "https://raw.githubusercontent.com/yourusername/copylist/main/version.json"
+    /// 从 Bundle 动态读取当前版本号
+    var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+    
+    let updateCheckURL = "https://raw.githubusercontent.com/Mr-Sure/CopyList/master/version.json"
     
     func checkForUpdates() {
         guard let url = URL(string: updateCheckURL) else { return }
@@ -39,7 +44,7 @@ struct UpdateChecker: ObservableObject {
     }
     
     func openDownloadPage() {
-        if let url = URL(string: downloadURL) {
+        if let url = URL(string: downloadURL.isEmpty ? "https://github.com/Mr-Sure/CopyList/releases" : downloadURL) {
             NSWorkspace.shared.open(url)
         }
     }

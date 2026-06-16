@@ -12,7 +12,7 @@ struct ClipboardApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var clipboardManager: ClipboardManager!
     var popover: NSPopover!
@@ -36,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 320, height: 600)
         popover.behavior = .transient
         popover.animates = false
+        popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: PopoverView().environmentObject(clipboardManager))
         
         NSApp.setActivationPolicy(.accessory)
@@ -63,6 +64,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func closePopover() {
         popover.performClose(nil)
+    }
+    
+    func popoverDidClose(_ notification: Notification) {
+        clipboardManager.flushPendingSave()
     }
     
     func checkAccessibilityPermission() {

@@ -10,6 +10,17 @@ struct SettingsView: View {
     /// 历史上限,与 ClipboardManager 共用同一个 key
     @AppStorage("maxHistoryItems") private var maxHistoryItems: Int = 1000
     @State private var showingClearAlert = false
+    @State private var showUpdateAlert = false
+    @State private var updateMessage = ""
+    
+    /// 从 Bundle 动态读取版本号
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+    }
+    /// 从 Bundle 动态读取构建时间
+    private var buildTime: String {
+        Bundle.main.infoDictionary?["CLBuildTime"] as? String ?? "未知"
+    }
     
     private let limitOptions: [(label: String, value: Int)] = [
         ("200", 200), ("500", 500), ("1000", 1000), ("2000", 2000), ("5000", 5000)
@@ -147,7 +158,7 @@ struct SettingsView: View {
                                 HStack {
                                     Text("版本")
                                     Spacer()
-                                    Text("1.2.1")
+                                    Text(appVersion)
                                         .foregroundColor(.secondary)
                                 }
                             }
@@ -156,11 +167,25 @@ struct SettingsView: View {
                             
                             SettingRow {
                                 HStack {
-                                    Text("构建日期")
+                                    Text("构建时间")
                                     Spacer()
-                                    Text("2025-06-11")
+                                    Text(buildTime)
                                         .foregroundColor(.secondary)
                                 }
+                            }
+                            
+                            Divider().padding(.leading, 16)
+                            
+                            SettingRow {
+                                Button(action: { checkForUpdates() }) {
+                                    HStack {
+                                        Text("检查更新")
+                                        Spacer()
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                    }
+                                    .foregroundColor(.blue)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .background(Color(NSColor.controlBackgroundColor))
@@ -178,6 +203,16 @@ struct SettingsView: View {
             }
         } message: {
             Text("此操作将删除所有历史记录（不含收藏），无法恢复")
+        }
+        .alert("更新检查", isPresented: $showUpdateAlert) {
+            Button("前往下载") {
+                if let url = URL(string: "https://github.com/Mr-Sure/CopyList/releases") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            Button("好的", role: .cancel) { }
+        } message: {
+            Text(updateMessage)
         }
     }
     
@@ -229,6 +264,41 @@ struct SettingsView: View {
                 try? FileManager.default.copyItem(at: exportURL, to: destination)
             }
         }
+    }
+    
+    private func checkForUpdates() {
+        let url = URL(string: "https://raw.githubusercontent.com/Mr-Sure/CopyList/master/version.json")!
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            DispatchQueue.main.async {
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let latestVersion = json["version"] as? String else {
+                    self.updateMessage = "无法检查更新，请检查网络连接"
+                    self.showUpdateAlert = true
+                    return
+                }
+                let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+                if self.compareVersions(current, latestVersion) {
+                    self.updateMessage = "发现新版本 \(latestVersion)\n当前版本: \(current)"
+                    self.showUpdateAlert = true
+                } else {
+                    self.updateMessage = "当前已是最新版本 (\(current))"
+                    self.showUpdateAlert = true
+                }
+            }
+        }.resume()
+    }
+    
+    private func compareVersions(_ current: String, _ latest: String) -> Bool {
+        let c = current.split(separator: ".").compactMap { Int($0) }
+        let l = latest.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(c.count, l.count) {
+            let cv = i < c.count ? c[i] : 0
+            let lv = i < l.count ? l[i] : 0
+            if lv > cv { return true }
+            if lv < cv { return false }
+        }
+        return false
     }
 }
 
