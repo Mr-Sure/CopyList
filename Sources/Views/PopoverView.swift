@@ -182,6 +182,10 @@ struct PopoverView: View {
                                 onEdit: {
                                     editingItem = item
                                     editText = item.content
+                                },
+                                onPasteComplete: {
+                                    // 重置临时禁用标志,避免搜索后永久卡在"只复制不粘贴"状态
+                                    allowPasteThisTime = true
                                 }
                             )
                             Divider()
@@ -373,6 +377,8 @@ struct ItemRow: View {
     @Binding var showCopiedState: Int?
     @Binding var showTagInput: ClipboardItem?
     let onEdit: () -> Void
+    /// 点击复制/粘贴流程结束后回调（用于重置 PopoverView 的 allowPasteThisTime）
+    var onPasteComplete: (() -> Void)? = nil
     /// 异步加载的缩略图;缓存命中时直接同步赋值
     @State private var loadedImage: NSImage?
     
@@ -498,40 +504,44 @@ struct ItemRow: View {
                     pLog("CopyList: 准备自动粘贴...")
                     pLog("CopyList: 关闭 Popover")
                     NSApp.sendAction(#selector(AppDelegate.closePopover), to: nil, from: nil)
-                    
+
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         pLog("CopyList: 开始执行粘贴操作")
-                        
+
                         // 检查辅助功能权限
                         let trusted = AXIsProcessTrusted()
                         pLog("CopyList: 辅助功能权限状态 %s", trusted ? "✅已授权" : "❌未授权")
-                        
+
                         if !trusted {
                             pLog("CopyList: ❌ 没有辅助功能权限，无法自动粘贴")
                             return
                         }
-                        
+
                         // 使用 AppleScript(每次新建实例,避免预编译脚本状态污染)
                         let script = NSAppleScript(source: """
                         tell application "System Events"
                             key code 9 using command down
                         end tell
                         """)
-                        
+
                         var errorDict: NSDictionary?
                         _ = script?.executeAndReturnError(&errorDict)
-                        
+
                         if let error = errorDict {
                             pLog("CopyList: ❌ AppleScript 执行失败: %@", error)
                         } else {
                             pLog("CopyList: ✅ AppleScript 执行成功")
                         }
                     }
+                    // 重置临时禁用标志,保证下次点击默认允许粘贴
+                    onPasteComplete?()
                 } else {
                     showCopiedState = index
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         showCopiedState = nil
                     }
+                    // 复制流程同样重置,避免搜索后永久卡在禁用状态
+                    onPasteComplete?()
                 }
             }
         }
