@@ -10,18 +10,16 @@ private func pLog(_ message: StaticString, _ args: CVarArg...) {
 
 struct PopoverView: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
-    @AppStorage("enableAutopaste") private var enableAutopaste = true
-    @State private var searchText = ""
-    @State private var isEditMode = false
-    @State private var editingItem: ClipboardItem?
-    @State private var editText = ""
     @State private var hasUpdate = false
     @State private var latestVersion = ""
     @State private var showCopiedIndex: Int? = nil
     @State private var showFavorites = false
+    @State private var searchText = ""
+    @State private var isEditMode = false
+    @State private var editingItem: ClipboardItem?
+    @State private var editText = ""
     @State private var showClearAlert = false
     @State private var showSettings = false
-    @State private var allowPasteThisTime = true
     @State private var selectedTag: String? = nil
     @State private var showTagInput: ClipboardItem? = nil
     @State private var newTag = ""
@@ -57,17 +55,10 @@ struct PopoverView: View {
                 TextField("搜索历史...", text: $searchText)
                     .textFieldStyle(.plain)
                     .focusable(false)
-                    .onTapGesture {
-                        allowPasteThisTime = false
-                    }
-                    .onChange(of: searchText) { _ in
-                        allowPasteThisTime = false
-                    }
                 
                 if !searchText.isEmpty {
                     Button(action: { 
                         searchText = ""
-                        allowPasteThisTime = true
                     }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.gray)
@@ -176,16 +167,11 @@ struct PopoverView: View {
                                 item: item,
                                 index: index + 1,
                                 isEditMode: isEditMode,
-                                shouldPaste: enableAutopaste && allowPasteThisTime,
                                 showCopiedState: $showCopiedIndex,
                                 showTagInput: $showTagInput,
                                 onEdit: {
                                     editingItem = item
                                     editText = item.content
-                                },
-                                onPasteComplete: {
-                                    // 重置临时禁用标志,避免搜索后永久卡在"只复制不粘贴"状态
-                                    allowPasteThisTime = true
                                 }
                             )
                             Divider()
@@ -370,15 +356,13 @@ struct PopoverView: View {
 
 struct ItemRow: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
+    @AppStorage("enableAutopaste") private var enableAutopaste = true
     let item: ClipboardItem
     let index: Int
     let isEditMode: Bool
-    let shouldPaste: Bool
     @Binding var showCopiedState: Int?
     @Binding var showTagInput: ClipboardItem?
     let onEdit: () -> Void
-    /// 点击复制/粘贴流程结束后回调（用于重置 PopoverView 的 allowPasteThisTime）
-    var onPasteComplete: (() -> Void)? = nil
     /// 异步加载的缩略图;缓存命中时直接同步赋值
     @State private var loadedImage: NSImage?
     
@@ -493,14 +477,17 @@ struct ItemRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if !isEditMode {
+                // 直接读取 AppStorage 的 enableAutopaste，确保搜索后点击结果也能正常粘贴+关闭
+                let doPaste = enableAutopaste
+                
                 pLog("=== CopyList: 开始复制流程 ===")
                 pLog("CopyList: 项目索引 %d", index)
                 pLog("CopyList: 项目类型 %s", String(describing: item.type))
-                pLog("CopyList: 是否应该粘贴 %s", shouldPaste ? "是" : "否")
+                pLog("CopyList: 是否应该粘贴 %s", doPaste ? "是" : "否")
                 
                 clipboardManager.copyToClipboard(item)
                 
-                if shouldPaste {
+                if doPaste {
                     pLog("CopyList: 准备自动粘贴...")
                     pLog("CopyList: 关闭 Popover")
                     NSApp.sendAction(#selector(AppDelegate.closePopover), to: nil, from: nil)
@@ -533,15 +520,11 @@ struct ItemRow: View {
                             pLog("CopyList: ✅ AppleScript 执行成功")
                         }
                     }
-                    // 重置临时禁用标志,保证下次点击默认允许粘贴
-                    onPasteComplete?()
                 } else {
                     showCopiedState = index
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         showCopiedState = nil
                     }
-                    // 复制流程同样重置,避免搜索后永久卡在禁用状态
-                    onPasteComplete?()
                 }
             }
         }
