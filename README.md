@@ -25,7 +25,7 @@
 | 🔄 自动更新 | 应用内检查新版本，一键下载 |
 | 🧠 内存优化 | NSCache LRU 淘汰 + 内存压力响应 |
 
-## 📸 截图
+## 📸 截图预览
 
 <p align="left">
   <img src="Docs/p1.jpeg" alt="CopyList Screenshot" width="400"> 
@@ -33,7 +33,7 @@
   <img src="Docs/p2.png" alt="CopyList Screenshot" width="400">
 </p>
 
-## 📥 安装
+## 📥 安装方式
 
 ### 方式一：下载 DMG（推荐）
 
