@@ -29,7 +29,9 @@
 
 <p align="left">
   <img src="Docs/p1.jpeg" alt="CopyList Screenshot" width="400"> 
-  
+</p>
+
+<p align="left">
   <img src="Docs/p2.png" alt="CopyList Screenshot" width="400">
 </p>
 
