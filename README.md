@@ -27,8 +27,10 @@
 
 ## 📸 截图
 
-<p align="center">
-  <img src="Docs/screenshot.png" alt="CopyList Screenshot" width="400">
+<p align="left">
+  <img src="Docs/p1.jpeg" alt="CopyList Screenshot" width="400"> 
+  
+  <img src="Docs/p2.png" alt="CopyList Screenshot" width="400">
 </p>
 
 ## 📥 安装
