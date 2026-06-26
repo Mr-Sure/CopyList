@@ -172,6 +172,11 @@ struct PopoverView: View {
                                 onEdit: {
                                     editingItem = item
                                     editText = item.content
+                                },
+                                onSelect: {
+                                    searchText = ""
+                                    showFavorites = false
+                                    selectedTag = nil
                                 }
                             )
                             Divider()
@@ -363,6 +368,7 @@ struct ItemRow: View {
     @Binding var showCopiedState: Int?
     @Binding var showTagInput: ClipboardItem?
     let onEdit: () -> Void
+    let onSelect: () -> Void
     /// 异步加载的缩略图;缓存命中时直接同步赋值
     @State private var loadedImage: NSImage?
     
@@ -485,6 +491,8 @@ struct ItemRow: View {
                 pLog("CopyList: 项目类型 %s", String(describing: item.type))
                 pLog("CopyList: 是否应该粘贴 %s", doPaste ? "是" : "否")
                 
+                // 选中记录后重置搜索状态
+                onSelect()
                 clipboardManager.copyToClipboard(item)
                 
                 if doPaste {

@@ -67,6 +67,7 @@ struct MainWindowView: View {
                             .contextMenu {
                                 Button("复制") {
                                     clipboardManager.copyToClipboard(item)
+                                    searchText = ""
                                 }
                                 if item.type == .text {
                                     Button("编辑") {
