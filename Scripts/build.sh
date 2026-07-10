@@ -62,6 +62,7 @@ swiftc -parse-as-library \
   -o CopyList.app/Contents/MacOS/CopyList \
   Sources/App/ClipboardApp.swift \
   Sources/Core/ClipboardManager.swift \
+  Sources/Core/ClipboardStore.swift \
   Sources/Core/UpdateChecker.swift \
   Sources/Views/PopoverView.swift \
   Sources/Views/SettingsView.swift \
@@ -71,7 +72,8 @@ swiftc -parse-as-library \
   -framework ServiceManagement \
   -framework CoreGraphics \
   -framework ImageIO \
-  -framework UniformTypeIdentifiers
+  -framework UniformTypeIdentifiers \
+  -lsqlite3
 
 echo "   编译成功"
 
