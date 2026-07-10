@@ -13,14 +13,15 @@
 
 | 功能 | 说明 |
 |------|------|
-| 📋 历史记录 | 支持文本、图片、文件，最高 5000 条 |
-| ⭐ 收藏夹 | 常用内容一键收藏，永不过期 |
+| 📋 历史记录 | 支持文本、图片、文件，SQLite 永久保存 |
+| ⭐ 收藏夹 | 常用内容一键收藏，永久保存至手动删除 |
 | 🏷️ 标签管理 | 为收藏项添加标签，分类筛选 |
 | 🔍 搜索过滤 | 按类型、关键词快速检索 |
 | 🎯 自动粘贴 | 点击即复制+粘贴（需辅助功能权限） |
 | 🚀 开机自启 | 随系统启动，无感运行 |
 | 🗑️ 内容去重 | 相同内容自动合并，不占空间 |
 | 💾 自动备份 | 收藏夹每小时自动备份 |
+| 🗃️ 本地数据库 | 历史按页加载，海量记录也保持流畅 |
 | 📤 导出功能 | 一键导出收藏夹为 JSON |
 | 🔄 自动更新 | 应用内检查新版本，一键下载 |
 | 🧠 内存优化 | NSCache LRU 淘汰 + 内存压力响应 |
@@ -81,6 +82,7 @@ swiftc -parse-as-library \
   -o CopyList.app/Contents/MacOS/CopyList \
   Sources/App/ClipboardApp.swift \
   Sources/Core/ClipboardManager.swift \
+  Sources/Core/ClipboardStore.swift \
   Sources/Core/UpdateChecker.swift \
   Sources/Views/PopoverView.swift \
   Sources/Views/SettingsView.swift \
@@ -90,7 +92,8 @@ swiftc -parse-as-library \
   -framework ServiceManagement \
   -framework CoreGraphics \
   -framework ImageIO \
-  -framework UniformTypeIdentifiers
+  -framework UniformTypeIdentifiers \
+  -lsqlite3
 ```
 
 ### DMG 打包

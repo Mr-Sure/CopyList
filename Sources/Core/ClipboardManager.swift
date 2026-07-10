@@ -36,21 +36,41 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     }
 }
 
+enum TagSaveResult {
+    case saved
+    case empty
+    case duplicate
+    case failed
+
+    var message: String? {
+        switch self {
+        case .saved: return nil
+        case .empty: return "请输入标签名称"
+        case .duplicate: return "该标签已存在"
+        case .failed: return "标签保存失败，请重试"
+        }
+    }
+}
+
 class ClipboardManager: ObservableObject {
     @Published var items: [ClipboardItem] = []
-    /// 历史上限,可由 Settings 配置(默认 1000)
-    @AppStorage("maxHistoryItems") var maxHistoryItems: Int = 1000
+    @Published private(set) var totalItemCount = 0
+    @Published private(set) var favoriteItemCount = 0
+    @Published private(set) var availableTags: [String] = []
     private var timer: Timer?
     private var backupTimer: Timer?
     /// 定期清理未使用的图片缓存（每 5 分钟）
     private var cacheCleanupTimer: Timer?
     private var lastChangeCount: Int
-    private let storageURL: URL
+    private let legacyStorageURL: URL
+    private let store: ClipboardStore
     private let imagesDirectory: URL
     private let thumbnailsDirectory: URL
     private let backupDirectory: URL
-    /// 防抖保存:连续操作合并为一次写盘
-    private var saveWorkItem: DispatchWorkItem?
+    private let pageSize = 100
+    private var activeQuery = ClipboardStore.Query()
+    private var hasLoadedAllPages = false
+    private var isLoadingPage = false
     /// 内存压力监听源(macOS 上等价于 didReceiveMemoryWarningNotification)
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private let imageCache: NSCache<NSString, NSImage> = {
@@ -67,15 +87,17 @@ class ClipboardManager: ObservableObject {
         let appDirectory = appSupport.appendingPathComponent("ClipboardHistory")
         try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
         
-        storageURL = appDirectory.appendingPathComponent("history.json")
+        legacyStorageURL = appDirectory.appendingPathComponent("history.json")
         imagesDirectory = appDirectory.appendingPathComponent("images")
         thumbnailsDirectory = appDirectory.appendingPathComponent("thumbnails")
         backupDirectory = appDirectory.appendingPathComponent("backups")
         try? FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+        store = try! ClipboardStore(databaseURL: appDirectory.appendingPathComponent("history.sqlite"))
         
-        loadHistory()
+        migrateLegacyHistoryIfNeeded()
+        resetLoadedPage()
         startMonitoring()
         startBackupTimer()
         registerMemoryWarning()
@@ -87,7 +109,6 @@ class ClipboardManager: ObservableObject {
         timer?.invalidate()
         backupTimer?.invalidate()
         cacheCleanupTimer?.invalidate()
-        saveWorkItem?.cancel()
     }
     
     /// 系统内存压力(.warning/.critical)时清空图片缓存
@@ -117,13 +138,8 @@ class ClipboardManager: ObservableObject {
         timer = nil
     }
     
-    /// 应用退出前调用,确保 pending 的防抖写盘落盘
+    /// SQLite 每次变更均已提交；保留此接口以兼容应用生命周期调用。
     func flushPendingSave() {
-        if saveWorkItem != nil {
-            saveWorkItem?.cancel()
-            saveWorkItem = nil
-            performSave()
-        }
     }
     
     func checkClipboard() {
@@ -191,23 +207,17 @@ class ClipboardManager: ObservableObject {
     }
     
     func addItem(_ item: ClipboardItem) {
-        if let index = items.firstIndex(where: { $0.content == item.content && $0.type == item.type }) {
-            // 内容已存在：更新时间戳并移到顶部
-            clLog("CopyList: 检测到重复内容，从位置 %d 移到顶部", index + 1)
-            var existingItem = items[index]
-            existingItem.timestamp = Date()
-            items.remove(at: index)
-            items.insert(existingItem, at: 0)
-            scheduleSaveHistory()
-            return
+        do {
+            if var existingItem = try store.duplicate(type: item.type, content: item.content) {
+                existingItem.timestamp = Date()
+                try store.update(existingItem)
+            } else {
+                try store.insert(item)
+            }
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 保存记录失败")
         }
-        clLog("CopyList: 添加新内容，类型: %s", String(describing: item.type))
-        items.insert(item, at: 0)
-        // 超过上限时原地裁剪,避免 Array(prefix) 整体拷贝
-        if items.count > maxHistoryItems {
-            items.removeSubrange(maxHistoryItems...)
-        }
-        scheduleSaveHistory()
     }
     
     func copyToClipboard(_ item: ClipboardItem) {
@@ -231,110 +241,162 @@ class ClipboardManager: ObservableObject {
             pasteboard.writeObjects(urls as [NSPasteboardWriting])
         }
         
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            var updatedItem = items[index]
+        do {
+            var updatedItem = item
             updatedItem.copyCount += 1
-            
             if updatedItem.copyCount >= 10 {
                 updatedItem.isFavorite = true
             }
-            
-            items.remove(at: index)
-            items.insert(updatedItem, at: 0)
-            scheduleSaveHistory()
+            updatedItem.timestamp = Date()
+            try store.update(updatedItem)
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 更新记录失败")
         }
         
         lastChangeCount = pasteboard.changeCount
     }
     
     func deleteItem(_ item: ClipboardItem) {
-        if item.type == .image {
-            let fileURL = imagesDirectory.appendingPathComponent(item.content)
-            try? FileManager.default.removeItem(at: fileURL)
+        do {
+            try store.delete(id: item.id)
+            removeImageAssets(for: item)
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 删除记录失败")
         }
-        items.removeAll { $0.id == item.id }
-        scheduleSaveHistory()
     }
     
     func toggleFavorite(_ item: ClipboardItem) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index].isFavorite.toggle()
-            scheduleSaveHistory()
-        }
+        var updated = item; updated.isFavorite.toggle()
+        persist(updated)
     }
     
-    func addTag(_ item: ClipboardItem, tag: String) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            if !items[index].tags.contains(tag) {
-                items[index].tags.append(tag)
-                scheduleSaveHistory()
-            }
+    @discardableResult
+    func addTag(_ item: ClipboardItem, tag: String) -> TagSaveResult {
+        let normalizedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTag.isEmpty else { return .empty }
+        guard !item.tags.contains(where: { $0.caseInsensitiveCompare(normalizedTag) == .orderedSame }) else {
+            return .duplicate
+        }
+
+        var updated = item
+        updated.tags.append(normalizedTag)
+        do {
+            try store.update(updated)
+            resetLoadedPage()
+            return .saved
+        } catch {
+            clLog("CopyList: 标签保存失败")
+            return .failed
         }
     }
     
     func removeTag(_ item: ClipboardItem, tag: String) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index].tags.removeAll { $0 == tag }
-            scheduleSaveHistory()
-        }
+        var updated = item; updated.tags.removeAll { $0 == tag }
+        persist(updated)
     }
     
     func updateItem(_ item: ClipboardItem, newContent: String) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index].content = newContent
-            scheduleSaveHistory()
-        }
+        var updated = item; updated.content = newContent
+        persist(updated)
     }
     
     func clearAll() {
-        for item in items where item.type == .image && !item.isFavorite {
-            let fileURL = imagesDirectory.appendingPathComponent(item.content)
-            try? FileManager.default.removeItem(at: fileURL)
+        do {
+            try store.imageFilenames(favorites: false).forEach(removeImageAssets)
+            try store.deleteAll(favorites: false)
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 清空历史失败")
         }
-        items.removeAll { !$0.isFavorite }
-        // 清空是不可逆关键操作,立即落盘
-        flushPendingSave()
     }
     
     func clearFavorites() {
-        for item in items where item.type == .image && item.isFavorite {
-            let fileURL = imagesDirectory.appendingPathComponent(item.content)
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-        items.removeAll { $0.isFavorite }
-        flushPendingSave()
-    }
-    
-    /// 上限被调低时调用,立即裁剪到新上限
-    func trimToMaxItems() {
-        guard items.count > maxHistoryItems else { return }
-        items.removeSubrange(maxHistoryItems...)
-        scheduleSaveHistory()
-    }
-    
-    /// 防抖保存:连续操作在 0.5s 窗口内合并为一次写盘
-    private func scheduleSaveHistory() {
-        saveWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.performSave()
-        }
-        saveWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-    
-    /// 实际写盘逻辑(原 saveHistory)
-    private func performSave() {
-        saveWorkItem = nil
-        if let data = try? JSONEncoder().encode(items) {
-            try? data.write(to: storageURL)
+        do {
+            try store.imageFilenames(favorites: true).forEach(removeImageAssets)
+            try store.deleteAll(favorites: true)
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 清空收藏失败")
         }
     }
-    
-    private func loadHistory() {
-        if let data = try? Data(contentsOf: storageURL),
-           let decoded = try? JSONDecoder().decode([ClipboardItem].self, from: data) {
-            items = decoded
+
+    /// 更新当前列表的数据库查询；只保留首个分页在内存中。
+    func configureQuery(favoritesOnly: Bool, tag: String?, searchText: String) {
+        let query = ClipboardStore.Query(favoritesOnly: favoritesOnly, tag: tag,
+                                         searchText: searchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard query != activeQuery else { return }
+        activeQuery = query
+        resetLoadedPage()
+    }
+
+    /// 末行出现时由 UI 调用，逐页追加而不是加载全部历史。
+    func loadNextPage() {
+        guard !isLoadingPage, !hasLoadedAllPages else { return }
+        isLoadingPage = true
+        defer { isLoadingPage = false }
+        do {
+            let page = try store.page(for: activeQuery, offset: items.count, limit: pageSize)
+            items.append(contentsOf: page)
+            hasLoadedAllPages = page.count < pageSize
+        } catch {
+            clLog("CopyList: 读取历史失败")
         }
+    }
+
+    private func resetLoadedPage() {
+        items = []
+        hasLoadedAllPages = false
+        refreshCounts()
+        loadNextPage()
+    }
+
+    private func refreshCounts() {
+        do {
+            totalItemCount = try store.count(activeQuery)
+            favoriteItemCount = try store.favoriteCount()
+            availableTags = try store.favoriteTags()
+        } catch {
+            clLog("CopyList: 刷新统计失败")
+        }
+    }
+
+    private func persist(_ item: ClipboardItem) {
+        do {
+            try store.update(item)
+            resetLoadedPage()
+        } catch {
+            clLog("CopyList: 保存修改失败")
+        }
+    }
+
+    private func migrateLegacyHistoryIfNeeded() {
+        guard (try? store.isEmpty()) == true,
+              let data = try? Data(contentsOf: legacyStorageURL),
+              let legacyItems = try? JSONDecoder().decode([ClipboardItem].self, from: data),
+              !legacyItems.isEmpty else { return }
+        do {
+            try store.importLegacy(legacyItems)
+            let migratedURL = legacyStorageURL.appendingPathExtension("migrated")
+            if FileManager.default.fileExists(atPath: migratedURL.path) {
+                try FileManager.default.removeItem(at: migratedURL)
+            }
+            try FileManager.default.moveItem(at: legacyStorageURL, to: migratedURL)
+        } catch {
+            clLog("CopyList: 迁移旧历史失败")
+        }
+    }
+
+    private func removeImageAssets(for item: ClipboardItem) {
+        guard item.type == .image else { return }
+        removeImageAssets(item.content)
+    }
+
+    private func removeImageAssets(_ filename: String) {
+        try? FileManager.default.removeItem(at: imagesDirectory.appendingPathComponent(filename))
+        try? FileManager.default.removeItem(at: thumbnailsDirectory.appendingPathComponent(filename))
+        imageCache.removeObject(forKey: filename as NSString)
     }
     
     func getImage(for filename: String) -> NSImage? {
@@ -421,7 +483,7 @@ class ClipboardManager: ObservableObject {
     }
     
     private func backupFavorites() {
-        let favorites = items.filter { $0.isFavorite }
+        let favorites = (try? store.allFavorites()) ?? []
         if favorites.isEmpty { return }
         
         let dateFormatter = DateFormatter()
@@ -451,7 +513,7 @@ class ClipboardManager: ObservableObject {
     }
     
     func exportFavorites() -> URL? {
-        let favorites = items.filter { $0.isFavorite }
+        let favorites = (try? store.allFavorites()) ?? []
         guard !favorites.isEmpty else { return nil }
         
         let dateFormatter = DateFormatter()

@@ -23,28 +23,19 @@ struct PopoverView: View {
     @State private var selectedTag: String? = nil
     @State private var showTagInput: ClipboardItem? = nil
     @State private var newTag = ""
+    @State private var tagSaveMessage: String? = nil
+    @FocusState private var isTagFieldFocused: Bool
     
     var allTags: [String] {
-        Array(Set(clipboardManager.items.flatMap { $0.tags })).sorted()
+        clipboardManager.availableTags
     }
     
     var filteredItems: [ClipboardItem] {
-        var baseItems = showFavorites 
-            ? clipboardManager.items.filter { $0.isFavorite }.sorted { $0.copyCount > $1.copyCount }
-            : clipboardManager.items
-        
-        if let tag = selectedTag {
-            baseItems = baseItems.filter { $0.tags.contains(tag) }
-        }
-        
-        if searchText.isEmpty {
-            return baseItems
-        }
-        return baseItems.filter { $0.content.localizedCaseInsensitiveContains(searchText) }
+        clipboardManager.items
     }
     
     var favoriteCount: Int {
-        clipboardManager.items.filter { $0.isFavorite }.count
+        clipboardManager.favoriteItemCount
     }
     
     var body: some View {
@@ -169,6 +160,8 @@ struct PopoverView: View {
                                 isEditMode: isEditMode,
                                 showCopiedState: $showCopiedIndex,
                                 showTagInput: $showTagInput,
+                                newTag: $newTag,
+                                tagSaveMessage: $tagSaveMessage,
                                 onEdit: {
                                     editingItem = item
                                     editText = item.content
@@ -179,6 +172,11 @@ struct PopoverView: View {
                                     selectedTag = nil
                                 }
                             )
+                            .onAppear {
+                                if item.id == filteredItems.last?.id {
+                                    clipboardManager.loadNextPage()
+                                }
+                            }
                             Divider()
                         }
                     }
@@ -188,7 +186,7 @@ struct PopoverView: View {
             Divider()
             
             HStack(spacing: 12) {
-                Text("共 \(clipboardManager.items.count) 条")
+                Text("已加载 \(clipboardManager.items.count) / 共 \(clipboardManager.totalItemCount) 条")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -292,6 +290,8 @@ struct PopoverView: View {
                     Button(action: { 
                         showTagInput = nil
                         newTag = ""
+                        tagSaveMessage = nil
+                        isTagFieldFocused = false
                     }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.gray)
@@ -301,30 +301,81 @@ struct PopoverView: View {
                 
                 TextField("输入标签名称", text: $newTag)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isTagFieldFocused)
+                    .onSubmit {
+                        saveTag(for: item)
+                    }
+
+                if let tagSaveMessage {
+                    Text(tagSaveMessage)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 
                 HStack {
                     Button("取消") {
                         showTagInput = nil
                         newTag = ""
+                        tagSaveMessage = nil
+                        isTagFieldFocused = false
                     }
                     .keyboardShortcut(.cancelAction)
                     
                     Spacer()
                     
                     Button("添加") {
-                        if !newTag.isEmpty {
-                            clipboardManager.addTag(item, tag: newTag)
-                            showTagInput = nil
-                            newTag = ""
-                        }
+                        saveTag(for: item)
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(newTag.isEmpty)
+                    .disabled(newTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .padding(20)
             .frame(width: 320, height: 160)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isTagFieldFocused = true
+            }
+            .onAppear {
+                focusTagFieldSoon()
+            }
+        }
+        .onAppear { refreshQuery() }
+        .onChange(of: showFavorites) { _ in refreshQuery() }
+        .onChange(of: selectedTag) { _ in refreshQuery() }
+        .onChange(of: searchText) { _ in refreshQuery() }
+    }
+
+    private func refreshQuery() {
+        clipboardManager.configureQuery(favoritesOnly: showFavorites, tag: selectedTag, searchText: searchText)
+    }
+
+    private func focusTagFieldSoon() {
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            isTagFieldFocused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            isTagFieldFocused = true
+        }
+    }
+
+    private func closeTagInput() {
+        showTagInput = nil
+        newTag = ""
+        tagSaveMessage = nil
+        isTagFieldFocused = false
+    }
+
+    private func saveTag(for item: ClipboardItem) {
+        switch clipboardManager.addTag(item, tag: newTag) {
+        case .saved:
+            closeTagInput()
+        case let result:
+            tagSaveMessage = result.message
+            focusTagFieldSoon()
         }
     }
     
@@ -367,6 +418,8 @@ struct ItemRow: View {
     let isEditMode: Bool
     @Binding var showCopiedState: Int?
     @Binding var showTagInput: ClipboardItem?
+    @Binding var newTag: String
+    @Binding var tagSaveMessage: String?
     let onEdit: () -> Void
     let onSelect: () -> Void
     /// 异步加载的缩略图;缓存命中时直接同步赋值
@@ -456,9 +509,6 @@ struct ItemRow: View {
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
-            .onTapGesture {
-                clipboardManager.toggleFavorite(item)
-            }
             
             if isEditMode {
                 Button(action: onEdit) {
@@ -468,9 +518,6 @@ struct ItemRow: View {
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    onEdit()
-                }
             }
         }
         .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
@@ -553,24 +600,26 @@ struct ItemRow: View {
             }
         )
         .contextMenu {
-            if item.isFavorite {
-                Button(action: { showTagInput = item }) {
-                    Label("添加标签", systemImage: "tag")
+            Button(action: {
+                newTag = ""
+                tagSaveMessage = nil
+                DispatchQueue.main.async {
+                    showTagInput = item
                 }
-                
-                if !item.tags.isEmpty {
-                    Menu("移除标签") {
-                        ForEach(item.tags, id: \.self) { tag in
-                            Button(tag) {
-                                clipboardManager.removeTag(item, tag: tag)
-                            }
+            }) {
+                Label("添加标签", systemImage: "tag")
+            }
+            if !item.tags.isEmpty {
+                Menu("移除标签") {
+                    ForEach(item.tags, id: \.self) { tag in
+                        Button(tag) {
+                            clipboardManager.removeTag(item, tag: tag)
                         }
                     }
                 }
-                
-                Divider()
             }
-            
+            Divider()
+
             Button(role: .destructive, action: { clipboardManager.deleteItem(item) }) {
                 Label("删除", systemImage: "trash")
             }
