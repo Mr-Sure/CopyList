@@ -23,9 +23,10 @@ echo "   当前版本: $CURRENT_VERSION (build $BUILD_NUMBER)"
 HAS_CHANGES=false
 
 # 检查未提交的变更（排除 Info.plist 和 version.json 自身）
-CHANGED_FILES=$(git diff --name-only HEAD 2>/dev/null | grep -v -E "^(Info\.plist|version\.json)$" || true)
-STAGED_FILES=$(git diff --cached --name-only 2>/dev/null | grep -v -E "^(Info\.plist|version\.json)$" || true)
-UNTRACKED_FILES=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "^(Info\.plist|version\.json)$" || true)
+VERSION_FILES_PATTERN='^(Resources/)?Info\.plist$|^version\.json$'
+CHANGED_FILES=$(git diff --name-only HEAD 2>/dev/null | grep -v -E "$VERSION_FILES_PATTERN" || true)
+STAGED_FILES=$(git diff --cached --name-only 2>/dev/null | grep -v -E "$VERSION_FILES_PATTERN" || true)
+UNTRACKED_FILES=$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "$VERSION_FILES_PATTERN" || true)
 
 if [ -n "$CHANGED_FILES" ] || [ -n "$STAGED_FILES" ] || [ -n "$UNTRACKED_FILES" ]; then
     HAS_CHANGES=true
@@ -94,11 +95,14 @@ echo ""
 echo "📲 安装到 /Applications..."
 killall CopyList 2>/dev/null || true
 sleep 1
-rm -rf /Applications/CopyList.app
-cp -r CopyList.app /Applications/
-
-echo "🚀 启动应用..."
-open /Applications/CopyList.app
+# 无 /Applications 写权限时（无管理员/构建沙箱）跳过安装，不中断打包流程
+if rm -rf /Applications/CopyList.app 2>/dev/null && cp -r CopyList.app /Applications/ 2>/dev/null; then
+    echo "   ✅ 已安装到 /Applications"
+    echo "🚀 启动应用..."
+    open /Applications/CopyList.app 2>/dev/null || true
+else
+    echo "   ⚠️ 无 /Applications 写权限，跳过安装（DMG 打包不受影响）"
+fi
 
 # ============ 生成 version.json（供远程更新检查） ============
 echo ""
@@ -138,21 +142,25 @@ done
 # 拷贝 version.json 方便分发
 cp version.json "$STAGING_DIR/"
 
-# 生成 dmg（UDZO 压缩）
+# 生成 dmg（UDZO 压缩）。hdiutil 在受限环境（如构建沙箱）可能被禁用，
+# 此时降级为警告而不是中断整个发布流程，其余交互可通过备注中手动补充。
 rm -f CopyList.dmg
-hdiutil create \
+if hdiutil create \
   -volname "CopyList" \
   -srcfolder "$STAGING_DIR" \
   -fs HFS+ \
   -format UDZO \
   -imagekey zlib-level=9 \
-  CopyList.dmg
+  CopyList.dmg 2>&1; then
+    echo "   ✅ DMG 打包完成: $(pwd)/CopyList.dmg"
+else
+    echo "   ⚠️ DMG 创建失败（当前环境可能禁用 hdiutil），请在有图形界面/权限的环境手动执行：
+    hdiutil create -volname CopyList -srcfolder \"$STAGING_DIR\" -fs HFS+ -format UDZO -imagekey zlib-level=9 $(pwd)/CopyList.dmg"
+fi
 
 # 清理暂存目录
 TMP_ROOT="$(dirname "$STAGING_DIR")"
 rm -rf "$TMP_ROOT"
-
-echo "   ✅ DMG 打包完成: $(pwd)/CopyList.dmg"
 
 # ============ Git 操作 ============
 echo ""
