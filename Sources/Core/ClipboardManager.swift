@@ -481,8 +481,8 @@ class ClipboardManager: ObservableObject {
     }
 
     /// 更新当前列表的数据库查询；只保留首个分页在内存中。
-    func configureQuery(favoritesOnly: Bool, tag: String?, searchText: String) {
-        let query = ClipboardStore.Query(favoritesOnly: favoritesOnly, tag: tag,
+    func configureQuery(favoritesOnly: Bool, tag: String?, type: ClipboardItem.ItemType? = nil, searchText: String) {
+        let query = ClipboardStore.Query(favoritesOnly: favoritesOnly, tag: tag, type: type,
                                          searchText: searchText.trimmingCharacters(in: .whitespacesAndNewlines))
         guard query != activeQuery else { return }
         activeQuery = query

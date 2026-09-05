@@ -7,19 +7,14 @@ struct MainWindowView: View {
     @State private var selectedItem: ClipboardItem?
     @State private var showingEditSheet = false
     @State private var filterType: ClipboardItem.ItemType?
-    
+
+    /// 列表由数据库查询驱动：搜索同时匹配正文与标签，且覆盖全部历史（不止当前分页）
     var filteredItems: [ClipboardItem] {
-        var items = clipboardManager.items
-        
-        if let type = filterType {
-            items = items.filter { $0.type == type }
-        }
-        
-        if !searchText.isEmpty {
-            items = items.filter { $0.content.localizedCaseInsensitiveContains(searchText) }
-        }
-        
-        return items
+        clipboardManager.items
+    }
+
+    private func refreshQuery() {
+        clipboardManager.configureQuery(favoritesOnly: false, tag: nil, type: filterType, searchText: searchText)
     }
     
     var body: some View {
@@ -56,7 +51,7 @@ struct MainWindowView: View {
                 if filteredItems.isEmpty {
                     VStack {
                         Spacer()
-                        Text("暂无历史记录")
+                        Text(searchText.isEmpty || filterType != nil ? "暂无历史记录" : "无搜索结果")
                             .foregroundColor(.gray)
                         Spacer()
                     }
@@ -112,6 +107,9 @@ struct MainWindowView: View {
                 EditItemView(item: item)
             }
         }
+        .onAppear { refreshQuery() }
+        .onChange(of: searchText) { _ in refreshQuery() }
+        .onChange(of: filterType) { _ in refreshQuery() }
     }
 }
 

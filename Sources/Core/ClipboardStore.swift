@@ -68,6 +68,7 @@ final class ClipboardStore {
     struct Query: Equatable {
         var favoritesOnly = false
         var tag: String?
+        var type: ClipboardItem.ItemType?
         var searchText = ""
     }
 
@@ -280,18 +281,30 @@ final class ClipboardStore {
         }
     }
 
+    /// LIKE 占位符：绑定值需先经 escapeLike 转义并预包裹 % 通配符
+    private static let likePlaceholder = "? ESCAPE '\\'"
+
     private func whereClause(for query: Query) -> String {
         var clauses: [String] = []
         if query.favoritesOnly { clauses.append("is_favorite = 1") }
-        if query.tag != nil { clauses.append("tags_json LIKE ? ESCAPE '\\'") }
-        if !query.searchText.isEmpty { clauses.append("content COLLATE NOCASE LIKE ? ESCAPE '\\'") }
+        if query.tag != nil { clauses.append("tags_json LIKE \(Self.likePlaceholder)") }
+        if query.type != nil { clauses.append("type = ?") }
+        if !query.searchText.isEmpty {
+            // 搜索同时匹配正文与标签：用户按“安全”搜索时，打上“安全”标签的记录也能被找到
+            clauses.append("(content COLLATE NOCASE LIKE \(Self.likePlaceholder) OR tags_json COLLATE NOCASE LIKE \(Self.likePlaceholder))")
+        }
         return clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
     }
 
     @discardableResult private func bindQuery(_ query: Query, to statement: OpaquePointer?) throws -> Int32 {
         var index: Int32 = 1
         if let tag = query.tag { try bind("%\"\(escapeLike(tag))\"%", at: index, to: statement); index += 1 }
-        if !query.searchText.isEmpty { try bind("%\(escapeLike(query.searchText))%", at: index, to: statement); index += 1 }
+        if let type = query.type { try bind(type.rawValue, at: index, to: statement); index += 1 }
+        if !query.searchText.isEmpty {
+            let pattern = "%\(escapeLike(query.searchText))%"
+            try bind(pattern, at: index, to: statement); index += 1   // 匹配正文 content
+            try bind(pattern, at: index, to: statement); index += 1   // 匹配标签 tags_json
+        }
         return index
     }
 

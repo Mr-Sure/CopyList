@@ -414,7 +414,7 @@ struct PopoverView: View {
     }
 
     private func refreshQuery() {
-        clipboardManager.configureQuery(favoritesOnly: showFavorites, tag: selectedTag, searchText: searchText)
+        clipboardManager.configureQuery(favoritesOnly: showFavorites, tag: selectedTag, type: nil, searchText: searchText)
     }
 
     private func focusTagFieldSoon() {
@@ -500,9 +500,39 @@ struct ItemRow: View {
     @State private var imageLoadFailed = false
     /// 延迟清除“已复制”标记的任务；新复制时取消旧任务
     @State private var copiedClearWorkItem: DispatchWorkItem? = nil
+    /// 标签区 hover 状态：hover 标签条时原地展开完整标签流，离开后延迟收回
+    @State private var isTagAreaHovered = false
+    /// 延迟收回展开标签区的任务；鼠标从标签条移入展开区时取消，避免闪烁
+    @State private var tagCollapseWorkItem: DispatchWorkItem? = nil
+
+    /// 行内最多直接展示的标签数，其余折叠为 +N 徽标
+    private static let inlineTagLimit = 2
+    /// 展开标签流最多完整展示的标签数，防止极端多标签把行撑得过高
+    private static let expandedTagLimit = 9
 
     var showCopied: Bool {
         showCopiedItemID == item.id
+    }
+
+    /// 是否处于“展开全部标签”状态（仅当标签数超过行内展示上限时才有展开意义）
+    private var showsAllTags: Bool {
+        isTagAreaHovered && item.tags.count > Self.inlineTagLimit
+    }
+
+    /// 标签条与展开区共用：进入立即展开，离开延迟 0.25s 收回，
+    /// 保证鼠标从标签条移入展开区的过程中不会先收起再展开而闪烁
+    private func handleTagHover(_ hovering: Bool) {
+        if hovering {
+            tagCollapseWorkItem?.cancel()
+            tagCollapseWorkItem = nil
+            withAnimation(.easeInOut(duration: 0.15)) { isTagAreaHovered = true }
+        } else {
+            let work = DispatchWorkItem {
+                withAnimation(.easeInOut(duration: 0.15)) { isTagAreaHovered = false }
+            }
+            tagCollapseWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
     }
     
     var body: some View {
@@ -537,15 +567,17 @@ struct ItemRow: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(previewText)
-                    .lineLimit(2)
+                    // 展开标签流时预览缩为 1 行，尽量抵消展开增加的行高
+                    .lineLimit(showsAllTags ? 1 : 2)
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                
+
                 HStack(spacing: 6) {
                     Text(item.timestamp, style: .relative)
                         .font(.caption2)
                         .foregroundColor(.gray)
-                    
+                        .fixedSize()
+
                     if item.copyCount > 0 {
                         Text("•")
                             .font(.caption2)
@@ -553,22 +585,44 @@ struct ItemRow: View {
                         Text("\(item.copyCount)次")
                             .font(.caption2)
                             .foregroundColor(.orange)
+                            .fixedSize()
                     }
-                    
-                    if !item.tags.isEmpty {
+
+                    // 行内标签区：hover 时整体隐藏（改由下方展开流完整展示），避免两份标签重复
+                    if !item.tags.isEmpty, !showsAllTags {
                         Text("•")
                             .font(.caption2)
                             .foregroundColor(.gray)
-                        ForEach(item.tags.prefix(2), id: \.self) { tag in
-                            Text(tag)
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.2))
-                                .foregroundColor(.blue)
-                                .cornerRadius(4)
+                        HStack(spacing: 4) {
+                            ForEach(item.tags.prefix(Self.inlineTagLimit), id: \.self) { tag in
+                                TagChip(text: tag, truncates: true)
+                            }
+                            if item.tags.count > Self.inlineTagLimit {
+                                TagChip(text: "+\(item.tags.count - Self.inlineTagLimit)",
+                                        truncates: false, isOverflowMarker: true)
+                            }
                         }
                     }
+                }
+                // hover 触发区固定在“时间戳行”整条上（展开时行内标签区会消失，
+                // 不能把触发区绑在被隐藏的标签上，否则会展开/收回死循环）
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onHover { handleTagHover($0) }
+
+                if showsAllTags {
+                    // 展开态：完整标签流替换行内标签区（预览文本已缩为 1 行）
+                    FlowLayout(spacing: 4) {
+                        ForEach(item.tags.prefix(Self.expandedTagLimit), id: \.self) { tag in
+                            TagChip(text: tag, truncates: false)
+                        }
+                        if item.tags.count > Self.expandedTagLimit {
+                            TagChip(text: "+\(item.tags.count - Self.expandedTagLimit)",
+                                    truncates: false, isOverflowMarker: true)
+                        }
+                    }
+                    .onHover { handleTagHover($0) }
+                    .transition(.opacity)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -602,6 +656,11 @@ struct ItemRow: View {
         .background(Color.clear)
         .onAppear {
             loadThumbnailIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .copyListPopoverDidClose)) { _ in
+            // Popover 关闭时复位标签展开状态，避免下次打开时行残留展开
+            tagCollapseWorkItem?.cancel()
+            isTagAreaHovered = false
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -757,6 +816,67 @@ struct ItemRow: View {
         case .text: return .blue
         case .image: return .green
         case .file: return .orange
+        }
+    }
+}
+
+// MARK: - 标签展示组件
+
+/// 标签胶囊：普通标签单行截断并限制最大宽度，防止长标签挤爆行内空间；
+/// "+N" 徽标不截断、使用中性灰配色以示区分
+struct TagChip: View {
+    let text: String
+    var truncates: Bool
+    var isOverflowMarker: Bool = false
+
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(isOverflowMarker ? Color.gray.opacity(0.18) : Color.blue.opacity(0.2))
+            .foregroundColor(isOverflowMarker ? .secondary : .blue)
+            .cornerRadius(4)
+            .fixedSize()
+            .frame(maxWidth: truncates ? 96 : nil)
+    }
+}
+
+/// 流式布局：子视图按行排列、超出容器宽度自动换行（macOS 13+ Layout 协议）
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : x, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }

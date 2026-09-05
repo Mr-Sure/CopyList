@@ -85,7 +85,15 @@ echo "📦 打包 App..."
 cp Resources/Info.plist CopyList.app/Contents/
 
 echo "🔏 代码签名..."
-codesign --force --deep --sign - --entitlements Resources/CopyList.entitlements CopyList.app
+# 使用固定的自签名证书（Scripts/create-signing-cert.sh 创建），签名身份跨版本稳定，
+# 辅助功能等 TCC 授权因此在版本更新后保留；证书缺失时回退 ad-hoc 签名（更新后需重新授权）
+if security find-identity -v -p codesigning | grep -q '"CopyListDev"'; then
+    codesign --force --deep --sign "CopyListDev" --entitlements Resources/CopyList.entitlements CopyList.app
+else
+    echo "   ⚠️ 未找到 CopyListDev 证书，回退 ad-hoc 签名（更新后需重新授权辅助功能）"
+    echo "   运行 Scripts/create-signing-cert.sh 创建证书后可永久解决"
+    codesign --force --deep --sign - --entitlements Resources/CopyList.entitlements CopyList.app
+fi
 
 echo "✅ 验证签名..."
 codesign -vvv CopyList.app
@@ -173,7 +181,9 @@ if ! git remote get-url origin &>/dev/null; then
 fi
 
 # 提交版本更新
-git add Resources/Info.plist version.json
+# 提交全部变更（源码 + 版本文件）：保证 release tag 与实际构建产物内容一致，
+# 否则 tag 只含版本号、不含本次发布的代码修复（.gitignore 会排除 dmg/app 等构建产物）
+git add -A
 git diff --cached --quiet || git commit -m "chore: bump version to $NEW_VERSION (build $BUILD_NUMBER)"
 
 # 创建版本标签
