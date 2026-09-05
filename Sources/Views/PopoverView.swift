@@ -12,7 +12,9 @@ struct PopoverView: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
     @State private var hasUpdate = false
     @State private var latestVersion = ""
-    @State private var showCopiedIndex: Int? = nil
+    @State private var lastUpdateCheckAt = Date.distantPast
+    /// 用条目 id（而非行号）标记“已复制”，避免列表重排后 ✓ 显示在错误的行上
+    @State private var showCopiedItemID: String? = nil
     @State private var showFavorites = false
     @State private var searchText = ""
     @State private var isEditMode = false
@@ -24,6 +26,8 @@ struct PopoverView: View {
     @State private var showTagInput: ClipboardItem? = nil
     @State private var newTag = ""
     @State private var tagSaveMessage: String? = nil
+    /// 自动粘贴因缺少系统权限失败时显示一次性提示
+    @State private var pasteFailedNotice: String? = nil
     @FocusState private var isTagFieldFocused: Bool
     
     var allTags: [String] {
@@ -134,10 +138,39 @@ struct PopoverView: View {
                     }
                     .font(.caption)
                     .buttonStyle(.plain)
+
+                    Button(action: { hasUpdate = false }) {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                    .help("暂不提醒")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(Color.blue.opacity(0.1))
+            }
+
+            if let pasteFailedNotice {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Text(pasteFailedNotice)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button(action: { self.pasteFailedNotice = nil }) {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.1))
             }
             
             Divider()
@@ -158,7 +191,7 @@ struct PopoverView: View {
                                 item: item,
                                 index: index + 1,
                                 isEditMode: isEditMode,
-                                showCopiedState: $showCopiedIndex,
+                                showCopiedItemID: $showCopiedItemID,
                                 showTagInput: $showTagInput,
                                 newTag: $newTag,
                                 tagSaveMessage: $tagSaveMessage,
@@ -170,6 +203,12 @@ struct PopoverView: View {
                                     searchText = ""
                                     showFavorites = false
                                     selectedTag = nil
+                                },
+                                onPastePermissionDenied: {
+                                    pasteFailedNotice = "自动粘贴失败：缺少辅助功能权限（系统设置 → 隐私与安全性 → 辅助功能）"
+                                },
+                                onPasteScriptDenied: {
+                                    pasteFailedNotice = "自动粘贴失败：未获得“控制 System Events”自动化权限，请在系统设置中允许"
                                 }
                             )
                             .onAppear {
@@ -251,31 +290,34 @@ struct PopoverView: View {
                     .buttonStyle(.plain)
                 }
                 .padding(16)
-                
+
                 Divider()
-                
+
                 TextEditor(text: $editText)
                     .font(.system(size: 13))
                     .frame(height: 180)
                     .padding(12)
-                
+
                 Divider()
-                
+
                 HStack(spacing: 12) {
                     Button("取消") {
                         editingItem = nil
                     }
                     .keyboardShortcut(.cancelAction)
-                    
+
                     Spacer()
-                    
+
                     Button("保存") {
+                        let trimmed = editText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
                         clipboardManager.updateItem(item, newContent: editText)
                         editingItem = nil
                         isEditMode = false
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
+                    .disabled(editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(16)
             }
@@ -346,6 +388,29 @@ struct PopoverView: View {
         .onChange(of: showFavorites) { _ in refreshQuery() }
         .onChange(of: selectedTag) { _ in refreshQuery() }
         .onChange(of: searchText) { _ in refreshQuery() }
+        .onReceive(clipboardManager.$availableTags) { tags in
+            // 当前筛选的标签已不存在（标签被移除/清空收藏）时自动退出筛选，
+            // 避免列表被“隐形筛选”成空列表而用户无从得知原因
+            if let tag = selectedTag, !tags.contains(tag) {
+                selectedTag = nil
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .copyListPopoverDidClose)) { _ in
+            resetTransientState()
+        }
+    }
+
+    /// Popover 关闭后复位临时界面状态，避免下次打开弹出残留面板或过期的复制提示
+    private func resetTransientState() {
+        showSettings = false
+        editingItem = nil
+        showTagInput = nil
+        newTag = ""
+        tagSaveMessage = nil
+        isTagFieldFocused = false
+        showClearAlert = false
+        showCopiedItemID = nil
+        pasteFailedNotice = nil
     }
 
     private func refreshQuery() {
@@ -380,7 +445,11 @@ struct PopoverView: View {
     }
     
     func checkForUpdates() {
-        guard let url = URL(string: "https://raw.githubusercontent.com/Mr-Sure/CopyList/main/version.json") else { return }
+        // 5 分钟内不重复请求，避免每次打开 Popover 都访问 GitHub
+        guard Date().timeIntervalSince(lastUpdateCheckAt) > 300 else { return }
+        lastUpdateCheckAt = Date()
+        // 注意：本仓库分支为 master（与 SettingsView 一致），使用 main 会导致 404 静默失败
+        guard let url = URL(string: "https://raw.githubusercontent.com/Mr-Sure/CopyList/master/version.json") else { return }
         
         URLSession.shared.dataTask(with: url) { data, _, _ in
             guard let data = data,
@@ -412,21 +481,28 @@ struct PopoverView: View {
 
 struct ItemRow: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
-    @AppStorage("enableAutopaste") private var enableAutopaste = true
+    /// 与 SettingsView 保持一致：默认关闭，避免“设置里显示关、实际却自动粘贴”
+    @AppStorage("enableAutopaste") private var enableAutopaste = false
     let item: ClipboardItem
     let index: Int
     let isEditMode: Bool
-    @Binding var showCopiedState: Int?
+    @Binding var showCopiedItemID: String?
     @Binding var showTagInput: ClipboardItem?
     @Binding var newTag: String
     @Binding var tagSaveMessage: String?
     let onEdit: () -> Void
     let onSelect: () -> Void
+    let onPastePermissionDenied: () -> Void
+    let onPasteScriptDenied: () -> Void
     /// 异步加载的缩略图;缓存命中时直接同步赋值
     @State private var loadedImage: NSImage?
-    
+    /// 缩略图加载失败（文件缺失等），显示占位并停止重试
+    @State private var imageLoadFailed = false
+    /// 延迟清除“已复制”标记的任务；新复制时取消旧任务
+    @State private var copiedClearWorkItem: DispatchWorkItem? = nil
+
     var showCopied: Bool {
-        showCopiedState == index
+        showCopiedItemID == item.id
     }
     
     var body: some View {
@@ -443,12 +519,12 @@ struct ItemRow: View {
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             } else if item.type == .image {
-                // 异步加载中的占位符
+                // 异步加载中的占位符 / 加载失败的兜底
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.gray.opacity(0.15))
                     .frame(width: 48, height: 48)
                     .overlay(
-                        Image(systemName: "photo")
+                        Image(systemName: imageLoadFailed ? "photo.badge.exclamationmark" : "photo")
                             .font(.caption)
                             .foregroundColor(.gray)
                     )
@@ -510,7 +586,7 @@ struct ItemRow: View {
             .buttonStyle(.plain)
             .contentShape(Rectangle())
             
-            if isEditMode {
+            if isEditMode && item.type == .text {
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                         .font(.body)
@@ -532,16 +608,16 @@ struct ItemRow: View {
             if !isEditMode {
                 // 直接读取 AppStorage 的 enableAutopaste，确保搜索后点击结果也能正常粘贴+关闭
                 let doPaste = enableAutopaste
-                
+
                 pLog("=== CopyList: 开始复制流程 ===")
                 pLog("CopyList: 项目索引 %d", index)
                 pLog("CopyList: 项目类型 %s", String(describing: item.type))
                 pLog("CopyList: 是否应该粘贴 %s", doPaste ? "是" : "否")
-                
+
                 // 选中记录后重置搜索状态
                 onSelect()
                 clipboardManager.copyToClipboard(item)
-                
+
                 if doPaste {
                     pLog("CopyList: 准备自动粘贴...")
                     pLog("CopyList: 关闭 Popover")
@@ -554,8 +630,9 @@ struct ItemRow: View {
                         let trusted = AXIsProcessTrusted()
                         pLog("CopyList: 辅助功能权限状态 %s", trusted ? "✅已授权" : "❌未授权")
 
-                        if !trusted {
+                        guard trusted else {
                             pLog("CopyList: ❌ 没有辅助功能权限，无法自动粘贴")
+                            onPastePermissionDenied()
                             return
                         }
 
@@ -571,15 +648,18 @@ struct ItemRow: View {
 
                         if let error = errorDict {
                             pLog("CopyList: ❌ AppleScript 执行失败: %@", error)
+                            onPasteScriptDenied()
                         } else {
                             pLog("CopyList: ✅ AppleScript 执行成功")
                         }
                     }
                 } else {
-                    showCopiedState = index
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        showCopiedState = nil
-                    }
+                    // 以条目 id 标记复制成功，避免列表重排后 ✓ 显示在错误的行
+                    showCopiedItemID = item.id
+                    copiedClearWorkItem?.cancel()
+                    let clear = DispatchWorkItem { showCopiedItemID = nil }
+                    copiedClearWorkItem = clear
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: clear)
                 }
             }
         }
@@ -644,7 +724,7 @@ struct ItemRow: View {
     /// 缩略图加载:缓存命中同步返回,否则异步解码后回主线程赋值,
     /// 避免滚动时主线程被磁盘 I/O / ImageIO 解码阻塞
     private func loadThumbnailIfNeeded() {
-        guard item.type == .image, loadedImage == nil else { return }
+        guard item.type == .image, loadedImage == nil, !imageLoadFailed else { return }
         let filename = item.content
         // 先同步查缓存(命中时直接展示,不进异步路径)
         if let cached = clipboardManager.getCachedImage(for: filename) {
@@ -655,6 +735,10 @@ struct ItemRow: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let image = self.clipboardManager.getImage(for: filename)
             DispatchQueue.main.async {
+                if image == nil {
+                    // 文件缺失/解码失败：标记后不再反复触发加载
+                    self.imageLoadFailed = true
+                }
                 self.loadedImage = image
             }
         }

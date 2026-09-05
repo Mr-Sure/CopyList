@@ -59,6 +59,7 @@ echo "   ✅ Info.plist 已更新"
 echo ""
 echo "🔨 编译 CopyList v${NEW_VERSION}..."
 swiftc -parse-as-library \
+  -module-cache-path /tmp/copylist_module_cache \
   -o CopyList.app/Contents/MacOS/CopyList \
   Sources/App/ClipboardApp.swift \
   Sources/Core/ClipboardManager.swift \
@@ -236,19 +237,17 @@ else
 EOF
 
             echo "   创建 Release $TAG..."
-            gh release create "$TAG" \
+            if gh release create "$TAG" \
                 --repo Mr-Sure/CopyList \
                 --title "CopyList $TAG" \
                 --notes-file "$RELEASE_NOTES_FILE" \
-                CopyList.dmg 2>&1
-
-            rm -f "$RELEASE_NOTES_FILE"
-
-            if [ $? -eq 0 ]; then
+                CopyList.dmg 2>&1; then
                 echo "   ✅ Release 已创建并上传 DMG"
             else
                 echo "   ⚠️ Release 创建失败，请手动创建: $GITHUB_RELEASES/new?tag=$TAG"
             fi
+
+            rm -f "$RELEASE_NOTES_FILE"
         else
             echo "   无代码变更，跳过 Release 创建"
         fi

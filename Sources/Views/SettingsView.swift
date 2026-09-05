@@ -10,6 +10,9 @@ struct SettingsView: View {
     @State private var showingClearAlert = false
     @State private var showUpdateAlert = false
     @State private var updateMessage = ""
+    @State private var showExportResult = false
+    @State private var exportResultMessage = ""
+    @State private var loginItemErrorMessage: String? = nil
     
     /// 从 Bundle 动态读取版本号
     private var appVersion: String {
@@ -53,7 +56,15 @@ struct SettingsView: View {
                                         toggleLaunchAtLogin(newValue)
                                     }
                             }
-                            
+                            if let loginItemErrorMessage {
+                                Text(loginItemErrorMessage)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 6)
+                            }
+
                             Divider().padding(.leading, 16)
                             
                             SettingRow {
@@ -85,7 +96,7 @@ struct SettingsView: View {
                                 HStack {
                                     Text("历史保存")
                                     Spacer()
-                                    Text("永久保存")
+                                    Text("最近 \(ClipboardManager.maxHistoryItems) 条（收藏永久）")
                                         .foregroundColor(.secondary)
                                 }
                             }
@@ -183,6 +194,10 @@ struct SettingsView: View {
             }
         }
         .frame(width: 320, height: 450)
+        .onAppear {
+            // 以系统真实登录项状态同步开关，避免“系统里已删除但开关仍显示开”
+            syncLaunchAtLoginState()
+        }
         .alert("确认清空所有历史？", isPresented: $showingClearAlert) {
             Button("取消", role: .cancel) { }
             Button("清空", role: .destructive) {
@@ -201,55 +216,164 @@ struct SettingsView: View {
         } message: {
             Text(updateMessage)
         }
+        .alert("导出收藏夹", isPresented: $showExportResult) {
+            Button("好的", role: .cancel) { }
+        } message: {
+            Text(exportResultMessage)
+        }
     }
-    
+
+    /// 读取系统登录项真实状态（优先 SMAppService，旧方式兜底）
+    private func syncLaunchAtLoginState() {
+        if #available(macOS 13.0, *) {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+            return
+        }
+        launchAtLogin = loginItemExists(named: appName())
+    }
+
+    private func appName() -> String {
+        Bundle.main.bundleURL.lastPathComponent.replacingOccurrences(of: ".app", with: "")
+    }
+
+    private func loginItemExists(named name: String) -> Bool {
+        let script = """
+        tell application "System Events"
+            try
+                get login item "\(name)"
+                return true
+            on error
+                return false
+            end try
+        end tell
+        """
+        guard let appleScript = NSAppleScript(source: script) else { return false }
+        var error: NSDictionary?
+        let output = appleScript.executeAndReturnError(&error)
+        return error == nil && output.booleanValue
+    }
+
+    /// 删除旧版本（≤1.3.21）通过 AppleScript 写入的登录项（若存在）。
+    /// 静默执行：未授权自动化时删除不了也不影响新流程。
+    private func removeLegacyLoginItem() {
+        let script = """
+        tell application "System Events"
+            try
+                delete login item "\(appName())"
+            end try
+        end tell
+        """
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            _ = appleScript.executeAndReturnError(&error)
+        }
+    }
+
     private func toggleLaunchAtLogin(_ enabled: Bool) {
+        // 优先使用 SMAppService（macOS 13+）：无需“控制 System Events”自动化授权，状态可查询
+        if #available(macOS 13.0, *) {
+            do {
+                try applyLaunchAtLogin(enabled)
+                if enabled, SMAppService.mainApp.status == .requiresApproval {
+                    loginItemErrorMessage = "已申请开机自启，请在 系统设置 → 通用 → 登录项 中批准"
+                    return
+                }
+                loginItemErrorMessage = nil
+                return
+            } catch {
+                // 注册失败的常见原因：系统设置里存在被禁用的同名旧登录项。删旧项后重试一次
+                removeLegacyLoginItem()
+                do {
+                    try applyLaunchAtLogin(enabled)
+                    loginItemErrorMessage = nil
+                } catch {
+                    loginItemErrorMessage = "开机自启设置失败：\(error.localizedDescription)"
+                    NSLog("CopyList: SMAppService 登录项设置失败: \(error)")
+                }
+                launchAtLogin = SMAppService.mainApp.status == .enabled
+                return
+            }
+        }
+
+        // 旧系统兜底：AppleScript 登录项
         let appPath = Bundle.main.bundleURL.path
-        let appName = Bundle.main.bundleURL.lastPathComponent.replacingOccurrences(of: ".app", with: "")
-        
+        let name = appName()
+        let script: String
         if enabled {
-            let script = """
+            script = """
             tell application "System Events"
-                make new login item at end with properties {path:"\(appPath)", hidden:false, name:"\(appName)"}
+                make new login item at end with properties {path:"\(appPath)", hidden:false, name:"\(name)"}
             end tell
             """
-            if let appleScript = NSAppleScript(source: script) {
-                var error: NSDictionary?
-                appleScript.executeAndReturnError(&error)
-                if let error = error {
-                    print("Failed to enable launch at login: \(error)")
-                }
-            }
         } else {
-            let script = """
+            script = """
             tell application "System Events"
                 try
-                    delete login item "\(appName)"
+                    delete login item "\(name)"
                 end try
             end tell
             """
-            if let appleScript = NSAppleScript(source: script) {
-                var error: NSDictionary?
-                appleScript.executeAndReturnError(&error)
-                if let error = error {
-                    print("Failed to disable launch at login: \(error)")
-                }
+        }
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+            if let error {
+                loginItemErrorMessage = "开机自启设置失败：\(error)"
+                NSLog("CopyList: 登录项设置失败: \(error)")
+            } else {
+                loginItemErrorMessage = nil
+            }
+        }
+    }
+
+    /// 幂等地切换 SMAppService 登录项；切换前清理旧版 AppleScript 登录项避免并存
+    @available(macOS 13.0, *)
+    private func applyLaunchAtLogin(_ enabled: Bool) throws {
+        if enabled {
+            // 升级兼容：旧版本（≤1.3.21）用 AppleScript 写的登录项仍存在时先删除，
+            // 避免升级后新旧两套登录项并存导致双重自启
+            removeLegacyLoginItem()
+            if SMAppService.mainApp.status != .enabled {
+                try SMAppService.mainApp.register()
+            }
+        } else {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
             }
         }
     }
     
     private func exportFavorites() {
-        guard let exportURL = clipboardManager.exportFavorites() else { return }
-        
+        guard let exportURL = clipboardManager.exportFavorites() else {
+            // 收藏夹为空时给出可见反馈，而不是按钮无响应
+            exportResultMessage = "收藏夹为空，没有可导出的内容"
+            showExportResult = true
+            return
+        }
+
         let panel = NSSavePanel()
         panel.nameFieldStringValue = exportURL.lastPathComponent
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
-        
+
         panel.begin { response in
-            if response == .OK, let destination = panel.url {
-                try? FileManager.default.copyItem(at: exportURL, to: destination)
+            guard response == .OK, let destination = panel.url else {
+                // 用户取消保存：清理临时导出文件
+                try? FileManager.default.removeItem(at: exportURL)
+                return
             }
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: exportURL, to: destination)
+                exportResultMessage = "已导出到：\(destination.path)"
+            } catch {
+                exportResultMessage = "导出失败：\(error.localizedDescription)"
+            }
+            // 清理临时导出文件
+            try? FileManager.default.removeItem(at: exportURL)
+            showExportResult = true
         }
     }
     

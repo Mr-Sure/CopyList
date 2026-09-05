@@ -4,7 +4,7 @@ import AppKit
 @main
 struct ClipboardApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+
     var body: some Scene {
         Settings {
             EmptyView()
@@ -12,10 +12,17 @@ struct ClipboardApp: App {
     }
 }
 
+extension Notification.Name {
+    /// Popover 已关闭，供 SwiftUI 侧复位临时状态
+    static let copyListPopoverDidClose = Notification.Name("copyListPopoverDidClose")
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var clipboardManager: ClipboardManager!
     var popover: NSPopover!
+    /// 最近一次 Popover 关闭时间：规避 transient 行为下点击状态栏图标“先被系统关闭、又被 toggle 重新打开”的闪烁
+    private var lastPopoverCloseAt = Date.distantPast
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         clipboardManager = ClipboardManager()
@@ -56,18 +63,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let button = statusItem.button {
             if popover.isShown {
                 popover.performClose(nil)
-            } else {
+            } else if Date().timeIntervalSince(lastPopoverCloseAt) > 0.25 {
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             }
         }
     }
-    
+
     @objc func closePopover() {
         popover.performClose(nil)
     }
-    
+
     func popoverDidClose(_ notification: Notification) {
+        lastPopoverCloseAt = Date()
         clipboardManager.flushPendingSave()
+        // 通知 SwiftUI 复位临时界面状态（sheet/面板），避免下次打开弹出残留面板
+        NotificationCenter.default.post(name: .copyListPopoverDidClose, object: nil)
     }
     
     func checkAccessibilityPermission() {
