@@ -84,6 +84,27 @@ echo ""
 echo "📦 打包 App..."
 cp Resources/Info.plist CopyList.app/Contents/
 
+# 运行时资源：状态栏图标缺失会让状态栏完全没有图标（图标查找失败后无任何提示），
+# 之前只在本地手工拷贝过，脚本未处理，导致全新 clone 构建/DMG 里没有该资源
+mkdir -p CopyList.app/Contents/Resources
+if [ -f Resources/statusbar_icon.png ]; then
+    cp Resources/statusbar_icon.png CopyList.app/Contents/Resources/
+    echo "   已拷贝 statusbar_icon.png"
+else
+    echo "   ⚠️ 缺少 Resources/statusbar_icon.png，状态栏图标将回退为系统符号"
+fi
+
+# 应用图标：优先用现成 icns，否则从 iconset 生成（缺失只影响 Finder/Dock 图标）
+if [ -f Resources/AppIcon.icns ]; then
+    cp Resources/AppIcon.icns CopyList.app/Contents/Resources/
+elif [ -d Resources/AppIcon.iconset ]; then
+    if iconutil -c icns Resources/AppIcon.iconset -o CopyList.app/Contents/Resources/AppIcon.icns 2>/dev/null; then
+        echo "   已从 AppIcon.iconset 生成 AppIcon.icns"
+    else
+        echo "   ⚠️ AppIcon.icns 生成失败（仅影响应用图标）"
+    fi
+fi
+
 echo "🔏 代码签名..."
 # 使用固定的自签名证书（Scripts/create-signing-cert.sh 创建），签名身份跨版本稳定，
 # 辅助功能等 TCC 授权因此在版本更新后保留；证书缺失时回退 ad-hoc 签名（更新后需重新授权）

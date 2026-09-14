@@ -79,6 +79,8 @@ struct PopoverView: View {
                 Spacer()
                 Text("\(favoriteCount)")
                     .font(.caption)
+                    .monospacedDigit()
+                    .lineLimit(1)
                     .foregroundColor(.gray)
                 Image(systemName: "chevron.right")
                     .font(.caption)
@@ -227,7 +229,10 @@ struct PopoverView: View {
             HStack(spacing: 12) {
                 Text("已加载 \(clipboardManager.items.count) / 共 \(clipboardManager.totalItemCount) 条")
                     .font(.caption)
+                    .monospacedDigit()
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                 
                 Spacer()
                 
@@ -509,6 +514,11 @@ struct ItemRow: View {
     private static let inlineTagLimit = 2
     /// 展开标签流最多完整展示的标签数，防止极端多标签把行撑得过高
     private static let expandedTagLimit = 9
+    /// 行内标签最大宽度：约 4 个中文字，超出即截断。
+    /// 行内一行还要放下时间戳、次数与 +N 徽标，单标签上限过大会把整行顶宽
+    private static let inlineTagMaxWidth: CGFloat = 64
+    /// 展开标签流中单个标签的最大宽度，超出截断后交给 FlowLayout 换行
+    private static let expandedTagMaxWidth: CGFloat = 140
 
     var showCopied: Bool {
         showCopiedItemID == item.id
@@ -517,6 +527,26 @@ struct ItemRow: View {
     /// 是否处于“展开全部标签”状态（仅当标签数超过行内展示上限时才有展开意义）
     private var showsAllTags: Bool {
         isTagAreaHovered && item.tags.count > Self.inlineTagLimit
+    }
+
+    /// 序号列。
+    /// 原实现固定 `.frame(width: 24)`，但历史上限为 1000 条、收藏数量不设上限，
+    /// 序号到 3 位以上（如 1000）时 24pt 已放不下，数字会被截断成 “10…” 或溢出压到类型图标上。
+    /// 现在按位数动态放宽列宽，并用等宽数字 + 缩放下限兜底，保证序号完整且不侵占图标区域。
+    private var indexLabel: some View {
+        Text("\(index)")
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundColor(.gray)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(width: Self.indexColumnWidth(for: index), alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// 序号列宽：1~2 位保持 24pt，之后每多一位加 8pt（caption 等宽数字约 6pt + 余量）
+    private static func indexColumnWidth(for index: Int) -> CGFloat {
+        24 + CGFloat(max(0, String(index).count - 2)) * 8
     }
 
     /// 标签条与展开区共用：进入立即展开，离开延迟 0.25s 收回，
@@ -537,10 +567,7 @@ struct ItemRow: View {
     
     var body: some View {
         HStack(spacing: 8) {
-            Text("\(index)")
-                .font(.caption)
-                .foregroundColor(.gray)
-                .frame(width: 24)
+            indexLabel
             
             if item.type == .image, let image = loadedImage {
                 Image(nsImage: image)
@@ -576,7 +603,10 @@ struct ItemRow: View {
                     Text(item.timestamp, style: .relative)
                         .font(.caption2)
                         .foregroundColor(.gray)
+                        .lineLimit(1)
                         .fixedSize()
+                        // 空间不足时让标签先被压缩/截断，时间戳与次数保持完整
+                        .layoutPriority(1)
 
                     if item.copyCount > 0 {
                         Text("•")
@@ -585,7 +615,9 @@ struct ItemRow: View {
                         Text("\(item.copyCount)次")
                             .font(.caption2)
                             .foregroundColor(.orange)
+                            .lineLimit(1)
                             .fixedSize()
+                            .layoutPriority(1)
                     }
 
                     // 行内标签区：hover 时整体隐藏（改由下方展开流完整展示），避免两份标签重复
@@ -595,13 +627,17 @@ struct ItemRow: View {
                             .foregroundColor(.gray)
                         HStack(spacing: 4) {
                             ForEach(item.tags.prefix(Self.inlineTagLimit), id: \.self) { tag in
-                                TagChip(text: tag, truncates: true)
+                                // 截断型标签可被压缩：标签多/标签长时先截断自身，
+                                // 而不是把整行顶宽后把序号与收藏按钮挤出可视区
+                                TagChip(text: tag, truncates: true, maxWidth: Self.inlineTagMaxWidth)
                             }
                             if item.tags.count > Self.inlineTagLimit {
                                 TagChip(text: "+\(item.tags.count - Self.inlineTagLimit)",
                                         truncates: false, isOverflowMarker: true)
+                                    .layoutPriority(2)
                             }
                         }
+                        .layoutPriority(0)
                     }
                 }
                 // hover 触发区固定在“时间戳行”整条上（展开时行内标签区会消失，
@@ -614,7 +650,8 @@ struct ItemRow: View {
                     // 展开态：完整标签流替换行内标签区（预览文本已缩为 1 行）
                     FlowLayout(spacing: 4) {
                         ForEach(item.tags.prefix(Self.expandedTagLimit), id: \.self) { tag in
-                            TagChip(text: tag, truncates: false)
+                            // 展开流同样限制单标签宽度并允许截断，超长标签不会横向溢出整行
+                            TagChip(text: tag, truncates: true, maxWidth: Self.expandedTagMaxWidth)
                         }
                         if item.tags.count > Self.expandedTagLimit {
                             TagChip(text: "+\(item.tags.count - Self.expandedTagLimit)",
@@ -824,26 +861,37 @@ struct ItemRow: View {
 
 /// 标签胶囊：普通标签单行截断并限制最大宽度，防止长标签挤爆行内空间；
 /// "+N" 徽标不截断、使用中性灰配色以示区分
+///
+/// 注意修饰符顺序：原实现把 `fixedSize()` 放在 `frame(maxWidth:)` 之前，
+/// 等于是「先声明按理想尺寸绘制、再限制最大宽度」，`maxWidth` 实际形同虚设 ——
+/// 长标签仍按自身理想宽度绘制并溢出到相邻内容上（表现为内容被遮挡）。
+/// 现在改为：先由 `maxWidth` 约束宽度让文本走尾部截断，再补背景；
+/// 只有不截断的 “+N” 徽标才保留 `fixedSize()` 抗压缩，避免被挤成省略号。
 struct TagChip: View {
     let text: String
     var truncates: Bool
+    /// 截断型标签的最大宽度；nil 表示不额外限制（仅用于短徽标）
+    var maxWidth: CGFloat? = nil
     var isOverflowMarker: Bool = false
 
     var body: some View {
         Text(text)
             .font(.caption2)
             .lineLimit(1)
+            .truncationMode(.tail)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
+            .frame(maxWidth: truncates ? (maxWidth ?? 96) : maxWidth)
             .background(isOverflowMarker ? Color.gray.opacity(0.18) : Color.blue.opacity(0.2))
             .foregroundColor(isOverflowMarker ? .secondary : .blue)
             .cornerRadius(4)
-            .fixedSize()
-            .frame(maxWidth: truncates ? 96 : nil)
+            .fixedSize(horizontal: !truncates, vertical: false)
     }
 }
 
-/// 流式布局：子视图按行排列、超出容器宽度自动换行（macOS 13+ Layout 协议）
+/// 流式布局：子视图按行排列、超出容器宽度自动换行（macOS 13+ Layout 协议）。
+/// 单个子视图比容器还宽时收敛到容器宽度（原实现只在“已有前序子视图”时换行，
+/// 首个超宽子视图会直接横向溢出到界面外），并把收敛后的宽度作为提案交给子视图以触发截断。
 struct FlowLayout: Layout {
     var spacing: CGFloat = 4
 
@@ -851,7 +899,7 @@ struct FlowLayout: Layout {
         let maxWidth = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = clampedSize(of: subview, maxWidth: maxWidth)
             if x > 0, x + size.width > maxWidth {
                 x = 0
                 y += rowHeight + spacing
@@ -868,15 +916,26 @@ struct FlowLayout: Layout {
         var y = bounds.minY
         var rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = clampedSize(of: subview, maxWidth: bounds.width)
             if x > bounds.minX, x + size.width > bounds.maxX {
                 x = bounds.minX
                 y += rowHeight + spacing
                 rowHeight = 0
             }
-            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            subview.place(at: CGPoint(x: x, y: y),
+                          anchor: .topLeading,
+                          proposal: ProposedViewSize(width: size.width, height: size.height))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+
+    /// 理想尺寸，并把宽度收敛到容器宽度内（宽度不受限时不做裁剪）
+    private func clampedSize(of subview: LayoutSubviews.Element, maxWidth: CGFloat) -> CGSize {
+        var size = subview.sizeThatFits(.unspecified)
+        if maxWidth.isFinite {
+            size.width = min(size.width, maxWidth)
+        }
+        return size
     }
 }
