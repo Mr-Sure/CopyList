@@ -122,19 +122,17 @@ struct ClipboardItemCell: View {
 
     /// 主窗口列表的图标槽边长：比弹窗（40pt）紧凑，适配 sidebar 行高
     private static let iconSlotSize: CGFloat = 28
+    /// 内容区图片预览的尺寸上限（比弹窗更紧凑）
+    private static let previewMaxWidth: CGFloat = 120
+    private static let previewMaxHeight: CGFloat = 36
 
     var body: some View {
         HStack(spacing: 12) {
-            // 与状态栏弹窗共用统一图标槽：图片项此前只有符号、没有缩略图，现补齐并统一风格
-            ItemIconSlot(item: item,
-                         size: Self.iconSlotSize,
-                         image: loadedImage,
-                         imageLoadFailed: imageLoadFailed)
+            // 与状态栏弹窗共用统一图标槽：槽内始终是类型图标
+            ItemIconSlot(item: item, size: Self.iconSlotSize)
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(previewText)
-                    .lineLimit(2)
-                    .font(.body)
+                previewContent
                 
                 HStack {
                     Text(item.timestamp, style: .relative)
@@ -166,6 +164,25 @@ struct ClipboardItemCell: View {
         case .file:
             let paths = item.content.components(separatedBy: "\n")
             return paths.count > 1 ? "\(paths.count) 个文件" : paths.first?.components(separatedBy: "/").last ?? "文件"
+        }
+    }
+
+    /// 内容区第一行：图片显示缩略图预览，其余显示内容预览（与状态栏弹窗保持一致）
+    @ViewBuilder
+    private var previewContent: some View {
+        if item.type == .image, let image = loadedImage {
+            let size = ImagePreviewMetrics.size(for: image,
+                                                maxWidth: Self.previewMaxWidth,
+                                                maxHeight: Self.previewMaxHeight)
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        } else {
+            Text(previewText)
+                .lineLimit(2)
+                .font(.body)
         }
     }
 

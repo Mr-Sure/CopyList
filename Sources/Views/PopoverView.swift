@@ -510,13 +510,13 @@ struct ItemRow: View {
     /// 延迟收回展开标签区的任务；鼠标从标签条移入展开区时取消，避免闪烁
     @State private var tagCollapseWorkItem: DispatchWorkItem? = nil
 
-    /// 行内最多直接展示的标签数，其余折叠为 +N 徽标
-    private static let inlineTagLimit = 2
+    /// 标签行最多**尝试**展示的标签数；实际显示几个由可用宽度动态决定，放不下的折叠为 +N
+    private static let tagRowMaxShown = 4
     /// 展开标签流最多完整展示的标签数，防止极端多标签把行撑得过高
     private static let expandedTagLimit = 9
-    /// 行内标签最大宽度：约 4 个中文字，超出即截断。
-    /// 行内一行还要放下时间戳、次数与 +N 徽标，单标签上限过大会把整行顶宽
-    private static let inlineTagMaxWidth: CGFloat = 64
+    /// 内容区图片预览的尺寸上限（按原图比例缩放到不超过该范围）
+    private static let previewMaxWidth: CGFloat = 160
+    private static let previewMaxHeight: CGFloat = 44
     /// 展开标签流中单个标签的最大宽度，超出截断后交给 FlowLayout 换行
     private static let expandedTagMaxWidth: CGFloat = 140
     /// 图标槽统一边长：文本、文件、图片三类共用，保证预览文本左起点与行宽一致
@@ -526,9 +526,9 @@ struct ItemRow: View {
         showCopiedItemID == item.id
     }
 
-    /// 是否处于“展开全部标签”状态（仅当标签数超过行内展示上限时才有展开意义）
+    /// 是否处于“展开全部标签”状态（悬停标签区域时展开完整标签流）
     private var showsAllTags: Bool {
-        isTagAreaHovered && item.tags.count > Self.inlineTagLimit
+        isTagAreaHovered && !item.tags.isEmpty
     }
 
     /// 序号列。
@@ -571,28 +571,20 @@ struct ItemRow: View {
         HStack(spacing: 8) {
             indexLabel
             
-            // 三类内容共用统一图标槽：尺寸、圆角、占位态一致；
-            // 图片由缩略图填充，加载中与失败态与文本、文件完全同构
-            ItemIconSlot(item: item,
-                         size: Self.iconSlotSize,
-                         image: loadedImage,
-                         imageLoadFailed: imageLoadFailed)
+            // 图标槽始终显示类型图标（文本 doc / 图片 photo / 文件 folder），
+            // 图片的缩略图预览放在内容区 —— 三类行的语义与左边缘因此完全一致
+            ItemIconSlot(item: item, size: Self.iconSlotSize)
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(previewText)
-                    // 展开标签流时预览缩为 1 行，尽量抵消展开增加的行高
-                    .lineLimit(showsAllTags ? 1 : 2)
-                    .font(.system(size: 13))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                previewContent
 
+                // 元信息行：只放时间戳与复制次数，不再与标签争抢宽度
                 HStack(spacing: 6) {
                     Text(item.timestamp, style: .relative)
                         .font(.caption2)
                         .foregroundColor(.gray)
                         .lineLimit(1)
                         .fixedSize()
-                        // 空间不足时让标签先被压缩/截断，时间戳与次数保持完整
-                        .layoutPriority(1)
 
                     if item.copyCount > 0 {
                         Text("•")
@@ -603,37 +595,23 @@ struct ItemRow: View {
                             .foregroundColor(.orange)
                             .lineLimit(1)
                             .fixedSize()
-                            .layoutPriority(1)
-                    }
-
-                    // 行内标签区：hover 时整体隐藏（改由下方展开流完整展示），避免两份标签重复
-                    if !item.tags.isEmpty, !showsAllTags {
-                        Text("•")
-                            .font(.caption2)
-                            .foregroundColor(.gray)
-                        HStack(spacing: 4) {
-                            ForEach(item.tags.prefix(Self.inlineTagLimit), id: \.self) { tag in
-                                // 截断型标签可被压缩：标签多/标签长时先截断自身，
-                                // 而不是把整行顶宽后把序号与收藏按钮挤出可视区
-                                TagChip(text: tag, truncates: true, maxWidth: Self.inlineTagMaxWidth)
-                            }
-                            if item.tags.count > Self.inlineTagLimit {
-                                TagChip(text: "+\(item.tags.count - Self.inlineTagLimit)",
-                                        truncates: false, isOverflowMarker: true)
-                                    .layoutPriority(2)
-                            }
-                        }
-                        .layoutPriority(0)
                     }
                 }
-                // hover 触发区固定在“时间戳行”整条上（展开时行内标签区会消失，
-                // 不能把触发区绑在被隐藏的标签上，否则会展开/收回死循环）
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onHover { handleTagHover($0) }
+
+                // 标签独占一行：可用宽度从「元信息行的剩余空间」提升为内容区整宽，
+                // 显示几个由宽度动态决定，放不下的折叠为 +N（不会被压缩成碎片）
+                if !item.tags.isEmpty, !showsAllTags {
+                    InlineTagStrip(tags: item.tags,
+                                   maxShown: Self.tagRowMaxShown,
+                                   compact: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // 与展开流保持同一套过渡，切换时才不会"瞬间消失 + 淡入"地跳一下
+                        .transition(.opacity)
+                }
 
                 if showsAllTags {
-                    // 展开态：完整标签流替换行内标签区（预览文本已缩为 1 行）
+                    // 展开态：完整标签流替换标签行（预览文本已缩为 1 行补偿高度）
                     FlowLayout(spacing: 4) {
                         ForEach(item.tags.prefix(Self.expandedTagLimit), id: \.self) { tag in
                             // 展开流同样限制单标签宽度并允许截断，超长标签不会横向溢出整行
@@ -644,11 +622,14 @@ struct ItemRow: View {
                                     truncates: false, isOverflowMarker: true)
                         }
                     }
-                    .onHover { handleTagHover($0) }
                     .transition(.opacity)
                 }
             }
+            // hover 触发区覆盖「元信息行 + 标签行」整体：展开时标签行会消失，
+            // 不能把触发区绑在被隐藏的标签上，否则会展开/收回死循环
             .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { handleTagHover($0) }
             
             Spacer(minLength: 0)
             
@@ -802,6 +783,46 @@ struct ItemRow: View {
             return paths.count > 1 ? "\(paths.count) 个文件" : paths.first?.components(separatedBy: "/").last ?? "文件"
         }
     }
+
+    /// 内容区第一行：图片显示缩略图预览，文本与文件显示内容预览，
+    /// 使三类的「图标槽 = 类型、内容区 = 内容」语义完全对齐
+    @ViewBuilder
+    private var previewContent: some View {
+        if item.type == .image {
+            imagePreview
+        } else {
+            Text(previewText)
+                // 行数固定为 2 行，不随标签展开态变化：
+                // 曾让它在展开时压成 1 行以"抵消行高"，但会导致 hover 瞬间文本重排、
+                // 内容区整体收缩一下（视觉抖动），且文字不足 2 行时补偿无效，故去掉联动
+                .lineLimit(2)
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// 图片预览：按原图比例缩放到不超过 160×44 后靠左显示；
+    /// 加载中或加载失败时回退为文字，保证内容区不会空白
+    @ViewBuilder
+    private var imagePreview: some View {
+        if let image = loadedImage {
+            let size = ImagePreviewMetrics.size(for: image,
+                                                maxWidth: Self.previewMaxWidth,
+                                                maxHeight: Self.previewMaxHeight)
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("图片预览")
+        } else {
+            Text(imageLoadFailed ? "图片（无法预览）" : "图片")
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
     
     /// 缩略图加载：缓存命中同步显示（不进异步路径），否则后台解码后回主线程赋值，
     /// 避免滚动时主线程被磁盘 I/O / ImageIO 解码阻塞（具体策略由共享加载器统一实现）
@@ -833,19 +854,74 @@ struct TagChip: View {
     /// 截断型标签的最大宽度；nil 表示不额外限制（仅用于短徽标）
     var maxWidth: CGFloat? = nil
     var isOverflowMarker: Bool = false
+    /// 紧凑尺寸：用于独占整行的标签行，压低行高占用
+    var compact: Bool = false
+
+    /// 长标签的截断上限（约 4 个中文字）
+    private static let defaultMaxWidth: CGFloat = 56
 
     var body: some View {
         Text(text)
             .font(.caption2)
             .lineLimit(1)
             .truncationMode(.tail)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .frame(maxWidth: truncates ? (maxWidth ?? 96) : maxWidth)
+            .padding(.horizontal, compact ? 5 : 6)
+            .padding(.vertical, compact ? 1 : 2)
+            .frame(maxWidth: truncates ? (maxWidth ?? Self.defaultMaxWidth) : maxWidth)
             .background(isOverflowMarker ? Color.gray.opacity(0.18) : Color.blue.opacity(0.2))
             .foregroundColor(isOverflowMarker ? .secondary : .blue)
-            .cornerRadius(4)
-            .fixedSize(horizontal: !truncates, vertical: false)
+            .cornerRadius(compact ? 3 : 4)
+            // 一律不可压缩：短标签按内容宽度、长标签截断到上限，宽度因此可预测。
+            // 这样 InlineTagStrip 才能用 ViewThatFits 判断「放不下」并降级；
+            // 若标签可压缩，空间紧张时会被挤成「…」「天」这类无法辨认的碎片
+            .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// 行内标签条：**按可用宽度动态决定显示几个标签**（最多 `maxShown` 个），
+/// 放不下的部分折叠为 "+N" 徽标，保证显示出来的每个标签都完整可读。
+///
+/// `ViewThatFits` 会从最完整的候选开始依次尝试、放不下就换下一个，
+/// 因此要求每个候选的宽度都是确定的（内部统一 `fixedSize`）。
+/// 候选数量随标签数动态生成（如 4→3→2→1→仅 "+N"），
+/// 标签数量少时不会产生多余候选。
+struct InlineTagStrip: View {
+    let tags: [String]
+    /// 最多尝试展示的标签数（实际数量由宽度决定）
+    var maxShown: Int = 4
+    /// 紧凑尺寸（标签行用）
+    var compact: Bool = false
+
+    /// 候选展示数量：从"最多"递减到 0（0 表示只显示 +N 徽标）
+    private var candidates: [Int] {
+        let upper = min(maxShown, tags.count)
+        guard upper > 0 else { return [0] }
+        return Array((0...upper).reversed())
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(candidates, id: \.self) { shown in
+                strip(shown: shown)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func strip(shown: Int) -> some View {
+        HStack(spacing: compact ? 3 : 4) {
+            ForEach(Array(tags.prefix(shown)), id: \.self) { tag in
+                TagChip(text: tag, truncates: true, compact: compact)
+            }
+            if tags.count > shown {
+                TagChip(text: "+\(tags.count - shown)",
+                        truncates: false,
+                        isOverflowMarker: true,
+                        compact: compact)
+            }
+        }
+        // 整体不可压缩：ViewThatFits 才能正确判断当前候选是否放得下
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
