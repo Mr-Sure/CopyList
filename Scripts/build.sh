@@ -114,7 +114,10 @@ first_bullet() {
         printf '版本发布\n'
         return
     fi
-    printf '%s' "$line" | sed -e 's/^- //' -e 's/\*\*//g' -e 's/`//g' -e 's/[：:].*$//'
+    # 注意：全角冒号必须作为字面量单独替换，不能写进字符类 [：:]
+    # —— BSD sed 的字符类按字节处理，会把「格」等汉字的尾字节误判为匹配，
+    # 从而在字符中间截断并产生乱码（如「视觉风�」）
+    printf '%s' "$line" | sed -e 's/^- //' -e 's/\*\*//g' -e 's/`//g' -e 's/：.*$//' -e 's/:.*$//'
     printf '\n'
 }
 
@@ -225,6 +228,7 @@ else
       Sources/Core/ClipboardStore.swift \
       Sources/Core/UpdateChecker.swift \
       Sources/Views/PopoverView.swift \
+      Sources/Views/ItemIconSlot.swift \
       Sources/Views/SettingsView.swift \
       Sources/Views/MainWindowView.swift \
       -framework SwiftUI \

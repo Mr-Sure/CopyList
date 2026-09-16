@@ -137,9 +137,10 @@ CopyList/
 │   │   ├── ClipboardStore.swift   # SQLite 存储层与去重
 │   │   └── UpdateChecker.swift    # 版本更新检查
 │   └── Views/                  # 视图层
-│       ├── PopoverView.swift   # 状态栏弹出窗口
-│       ├── SettingsView.swift  # 设置界面
-│       └── MainWindowView.swift # 主窗口（备用）
+│       ├── PopoverView.swift    # 状态栏弹出窗口
+│       ├── MainWindowView.swift # 主窗口（备用）
+│       ├── ItemIconSlot.swift   # 列表项统一图标槽（弹窗与主窗口共用）
+│       └── SettingsView.swift   # 设置界面
 ├── Resources/                  # 资源文件
 │   ├── Info.plist              # 应用配置
 │   ├── CopyList.entitlements   # 权限声明

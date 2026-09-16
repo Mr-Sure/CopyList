@@ -519,6 +519,8 @@ struct ItemRow: View {
     private static let inlineTagMaxWidth: CGFloat = 64
     /// 展开标签流中单个标签的最大宽度，超出截断后交给 FlowLayout 换行
     private static let expandedTagMaxWidth: CGFloat = 140
+    /// 图标槽统一边长：文本、文件、图片三类共用，保证预览文本左起点与行宽一致
+    private static let iconSlotSize: CGFloat = 40
 
     var showCopied: Bool {
         showCopiedItemID == item.id
@@ -569,28 +571,12 @@ struct ItemRow: View {
         HStack(spacing: 8) {
             indexLabel
             
-            if item.type == .image, let image = loadedImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 48, height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else if item.type == .image {
-                // 异步加载中的占位符 / 加载失败的兜底
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.gray.opacity(0.15))
-                    .frame(width: 48, height: 48)
-                    .overlay(
-                        Image(systemName: imageLoadFailed ? "photo.badge.exclamationmark" : "photo")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    )
-            } else {
-                Image(systemName: iconName)
-                    .font(.body)
-                    .foregroundColor(iconColor)
-                    .frame(width: 36, height: 36)
-            }
+            // 三类内容共用统一图标槽：尺寸、圆角、占位态一致；
+            // 图片由缩略图填充，加载中与失败态与文本、文件完全同构
+            ItemIconSlot(item: item,
+                         size: Self.iconSlotSize,
+                         image: loadedImage,
+                         imageLoadFailed: imageLoadFailed)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(previewText)
@@ -817,42 +803,16 @@ struct ItemRow: View {
         }
     }
     
-    /// 缩略图加载:缓存命中同步返回,否则异步解码后回主线程赋值,
-    /// 避免滚动时主线程被磁盘 I/O / ImageIO 解码阻塞
+    /// 缩略图加载：缓存命中同步显示（不进异步路径），否则后台解码后回主线程赋值，
+    /// 避免滚动时主线程被磁盘 I/O / ImageIO 解码阻塞（具体策略由共享加载器统一实现）
     private func loadThumbnailIfNeeded() {
         guard item.type == .image, loadedImage == nil, !imageLoadFailed else { return }
-        let filename = item.content
-        // 先同步查缓存(命中时直接展示,不进异步路径)
-        if let cached = clipboardManager.getCachedImage(for: filename) {
-            loadedImage = cached
-            return
-        }
-        // 缓存未命中,后台解码
-        DispatchQueue.global(qos: .userInitiated).async {
-            let image = self.clipboardManager.getImage(for: filename)
-            DispatchQueue.main.async {
-                if image == nil {
-                    // 文件缺失/解码失败：标记后不再反复触发加载
-                    self.imageLoadFailed = true
-                }
-                self.loadedImage = image
+        ClipboardThumbnailLoader.load(filename: item.content, manager: clipboardManager) { image in
+            if image == nil {
+                // 文件缺失/解码失败：标记后不再反复触发加载
+                self.imageLoadFailed = true
             }
-        }
-    }
-    
-    var iconName: String {
-        switch item.type {
-        case .text: return "doc.text"
-        case .image: return "photo"
-        case .file: return "folder"
-        }
-    }
-    
-    var iconColor: Color {
-        switch item.type {
-        case .text: return .blue
-        case .image: return .green
-        case .file: return .orange
+            self.loadedImage = image
         }
     }
 }

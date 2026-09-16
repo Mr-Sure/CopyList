@@ -116,13 +116,20 @@ struct MainWindowView: View {
 struct ClipboardItemCell: View {
     @EnvironmentObject var clipboardManager: ClipboardManager
     let item: ClipboardItem
-    
+    /// 缩略图（仅图片类型）：与状态栏弹窗共用同一套加载策略
+    @State private var loadedImage: NSImage?
+    @State private var imageLoadFailed = false
+
+    /// 主窗口列表的图标槽边长：比弹窗（40pt）紧凑，适配 sidebar 行高
+    private static let iconSlotSize: CGFloat = 28
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .font(.title3)
-                .foregroundColor(iconColor)
-                .frame(width: 24)
+            // 与状态栏弹窗共用统一图标槽：图片项此前只有符号、没有缩略图，现补齐并统一风格
+            ItemIconSlot(item: item,
+                         size: Self.iconSlotSize,
+                         image: loadedImage,
+                         imageLoadFailed: imageLoadFailed)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(previewText)
@@ -145,6 +152,9 @@ struct ClipboardItemCell: View {
             Spacer()
         }
         .padding(.vertical, 4)
+        .onAppear {
+            loadThumbnailIfNeeded()
+        }
     }
     
     var previewText: String {
@@ -158,20 +168,15 @@ struct ClipboardItemCell: View {
             return paths.count > 1 ? "\(paths.count) 个文件" : paths.first?.components(separatedBy: "/").last ?? "文件"
         }
     }
-    
-    var iconName: String {
-        switch item.type {
-        case .text: return "doc.text"
-        case .image: return "photo"
-        case .file: return "folder"
-        }
-    }
-    
-    var iconColor: Color {
-        switch item.type {
-        case .text: return .blue
-        case .image: return .green
-        case .file: return .orange
+
+    /// 缩略图加载：与状态栏弹窗共用 ClipboardThumbnailLoader，避免两处策略漂移
+    private func loadThumbnailIfNeeded() {
+        guard item.type == .image, loadedImage == nil, !imageLoadFailed else { return }
+        ClipboardThumbnailLoader.load(filename: item.content, manager: clipboardManager) { image in
+            if image == nil {
+                self.imageLoadFailed = true
+            }
+            self.loadedImage = image
         }
     }
 }
@@ -208,7 +213,7 @@ struct ClipboardDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
-                        Label(typeText, systemImage: iconName)
+                        Label(typeText, systemImage: ItemIconSlot.iconName(for: item.type))
                             .font(.subheadline)
                             .foregroundColor(.gray)
                         
@@ -267,14 +272,6 @@ struct ClipboardDetailView: View {
         case .text: return "文本"
         case .image: return "图片"
         case .file: return "文件"
-        }
-    }
-    
-    var iconName: String {
-        switch item.type {
-        case .text: return "doc.text"
-        case .image: return "photo"
-        case .file: return "folder"
         }
     }
 }
