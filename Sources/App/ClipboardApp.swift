@@ -34,18 +34,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 因此这里保持 false（自带高亮配色，深浅菜单栏下都可见）；
     /// 若以后换成单色描边图标，可置为 true 由系统统一接管配色。
     private static let statusIconUsesTemplate = false
+    /// 状态栏项的持久化名称（`autosaveName`），**必须全局唯一**。
+    ///
+    /// 不设置时系统使用默认名 `Item-N`，并把「位置 / 可见性」记录写进**全局共享的**
+    /// `com.apple.systemuiserver`：所有未命名的状态项（各第三方菜单栏应用）共用同一批
+    /// `Item-N` 键，会互相覆盖。一旦某条记录把该项写成「不可见」，系统在**每次启动时**
+    /// 都会据此把图标恢复成隐藏状态 —— 表现为「重启后状态栏里找不到图标」，
+    /// 且与图标加载、重绘时机完全无关（这正是此前反复修图标渲染都无效的原因）。
+    private static let statusItemAutosaveName = "com.local.copylist.statusitem"
     /// 已绘制好的图标缓存：全屏切换、空间切换时重新提交无需重复解码 3MB 原图
     private var cachedStatusIcon: NSImage?
     /// 合并短时间内的多次刷新（切换空间会连发多条通知）
     private var statusRefreshWorkItem: DispatchWorkItem?
     private var statusObservers: [NSObjectProtocol] = []
+    /// 可见性看门狗：菜单栏服务重建（SystemUIServer 重启、登录切换）后不会通知应用，
+    /// 只能周期性主动复查，否则状态项会一直保持隐藏
+    private var statusVisibilityTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         clipboardManager = ClipboardManager()
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        applyStatusItemIcon()
+        // 唯一 autosaveName：让「位置 / 可见性」记录独立成键，避免与其它未命名状态项互相覆盖
+        statusItem.autosaveName = Self.statusItemAutosaveName
+        // 允许用户 ⌘ 拖动图标重新排序。
+        // 菜单栏项较多时，第三方项排在靠近应用菜单的一侧；当应用菜单较宽（浏览器、编辑器等）
+        // 时，应用菜单会向右延伸并把它遮住（这正是「聚焦编辑器/浏览器就看不见图标」的原因）。
+        // 应用没有 API 可以指定状态项位置，唯一可行的调整方式是用户拖动重排 —— 因此打开该能力。
+        // 不设置 terminationOnRemoval：拖出菜单栏只是隐藏该项，随后会被可见性看门狗恢复。
+        statusItem.behavior = .removalAllowed
+        _ = applyStatusItemIcon()
+        // 该项此前若被隐藏（窗口已坍缩），立即恢复；恢复会重建按钮，故延后重新装配图标
+        if restoreStatusItemVisibilityIfNeeded() {
+            scheduleStatusBarRefresh(delay: 0.3)
+        }
         startObservingStatusBarAppearance()
+        startStatusItemVisibilityWatchdog()
+        // 菜单栏就绪过程中系统可能再次改写可见性，延迟复查一次兜底
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            if self.restoreStatusItemVisibilityIfNeeded() {
+                self.scheduleStatusBarRefresh(delay: 0.3)
+            }
+        }
         
         popover = NSPopover()
         popover.contentSize = NSSize(width: 320, height: 600)
@@ -65,6 +96,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 退出前确保 pending 的防抖写盘落盘
     func applicationWillTerminate(_ notification: Notification) {
         statusRefreshWorkItem?.cancel()
+        statusVisibilityTimer?.invalidate()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         for observer in statusObservers {
             workspaceCenter.removeObserver(observer)
@@ -102,14 +134,71 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // 这里主动触发一次重绘，避免“图标偶发空白”
         button.needsDisplay = true
         button.displayIfNeeded()
-        if !statusItem.isVisible {
-            statusItem.isVisible = true
-        }
         return true
     }
 
+    /// 状态项是否真的显示在菜单栏上。
+    ///
+    /// **不能用 `statusItem.isVisible` 判断**：实测（v1.3.25 二进制）系统把项隐藏后，
+    /// 该属性依然读出 `true`，导致「读到可见 → 不恢复 → 图标永远不出现」。
+    /// 而状态项被隐藏时，其窗口会**坍缩成 0×0**（正常为约 34×24），
+    /// 因此以窗口宽度作为判据；窗口尚未创建时返回 nil，避免启动早期误判。
+    private var statusItemVisibility: Bool? {
+        guard let window = statusItem.button?.window else { return nil }
+        return window.frame.width > 1
+    }
+
+    /// 复查并在必要时恢复状态项的可见性。
+    ///
+    /// 状态项可能被系统（菜单栏空间不足）或用户（⌘ 拖动将其移出菜单栏）标记为隐藏，
+    /// 且该状态会被持久化 —— 不显式恢复的话，**重启之后会一直是隐藏的**，
+    /// 这正是「重启后状态栏里找不到图标」的直接原因。
+    ///
+    /// - Returns: 是否执行了恢复动作（调用方需在恢复后**延后**重新装配图标）
+    @discardableResult
+    private func restoreStatusItemVisibilityIfNeeded() -> Bool {
+        guard let statusItem, statusItemVisibility == false else { return false }
+
+        // 重新绑定唯一 autosaveName，确保恢复动作写回我们自己的记录键，
+        // 而不是与其它应用共享的默认 "Item-N"
+        statusItem.autosaveName = Self.statusItemAutosaveName
+        statusItem.isVisible = true
+        NSLog("CopyList: 检测到状态栏项被隐藏（窗口已坍缩），已强制恢复显示")
+        return true
+    }
+
+    /// 菜单栏外观变化（切换空间 / 进出全屏 / 屏幕参数变化 / 应用激活）时的统一处理：
+    /// 先复查可见性，再刷新图标。
+    ///
+    /// 注意：`isVisible = true` 会让 AppKit **重建状态项按钮**，紧跟着写入的图标会随旧按钮
+    /// 一起丢失（表现为状态项变成一条空白窄条，宽度只剩 16pt 左右），因此恢复之后必须延后装配。
+    private func handleMenuBarChange() {
+        if restoreStatusItemVisibilityIfNeeded() {
+            scheduleStatusBarRefresh(delay: 0.3)
+        } else {
+            scheduleStatusBarRefresh()
+        }
+    }
+
+    /// 周期性复查可见性。
+    /// 菜单栏服务重建（SystemUIServer 重启、快速用户切换、登录过渡）不会发出任何通知，
+    /// 状态项可能因此长期停留在隐藏状态；这里用低频轮询兜底。
+    private func startStatusItemVisibilityWatchdog() {
+        statusVisibilityTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            // 可见时零开销（仅一次属性读取），只有确实被隐藏才恢复并延后重新装配
+            if self.restoreStatusItemVisibilityIfNeeded() {
+                self.scheduleStatusBarRefresh(delay: 0.3)
+            }
+        }
+        // 允许系统合并唤醒以省电；复查本身只是一次属性读取，代价可忽略
+        timer.tolerance = 2
+        statusVisibilityTimer = timer
+    }
+
     /// 监听会让菜单栏重新出现的事件（切换空间 / 进入退出全屏、屏幕参数变化、App 激活），
-    /// 在这些时机重新提交一次图标 —— 修复“全屏下把鼠标移到屏幕顶部唤出菜单栏时图标偶发不显示”。
+    /// 在这些时机复查可见性并重新提交图标 —— 覆盖「进入/退出全屏后菜单栏里找不到图标」。
     private func startObservingStatusBarAppearance() {
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         statusObservers.append(workspaceCenter.addObserver(
@@ -117,21 +206,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleStatusBarRefresh()
+            self?.handleMenuBarChange()
         })
         statusObservers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleStatusBarRefresh()
+            self?.handleMenuBarChange()
         })
         statusObservers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleStatusBarRefresh()
+            self?.handleMenuBarChange()
         })
     }
 
@@ -141,7 +230,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusRefreshWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            // 可能换了显示器/缩放倍率，重新生成位图
+            // 可能换了显示器/缩放倍率，重新生成位图后重新装配图标
             self.cachedStatusIcon = nil
             _ = self.applyStatusItemIcon()
         }
